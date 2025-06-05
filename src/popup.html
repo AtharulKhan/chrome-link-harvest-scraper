@@ -17,14 +17,35 @@
 
       <div class="form-section">
         <div class="form-group">
-          <label for="urlInput">Website URL</label>
-          <div class="url-input-container">
-            <input
-              type="url"
-              id="urlInput"
-              placeholder="https://example.com"
-              required
-            />
+          <label>Website URLs</label>
+          <div class="url-mode-toggle">
+            <label class="mode-toggle">
+              <input type="radio" name="urlMode" value="single" checked />
+              <span>Single URLs</span>
+            </label>
+            <label class="mode-toggle">
+              <input type="radio" name="urlMode" value="list" />
+              <span>URL List (one per line)</span>
+            </label>
+          </div>
+          <div id="singleUrlMode">
+            <div id="urlsContainer">
+              <div class="url-input-container">
+                <input
+                  type="url"
+                  class="url-input"
+                  placeholder="https://example.com"
+                  required
+                />
+                <button
+                  type="button"
+                  class="add-url-button"
+                  title="Add another URL"
+                >
+                  +
+                </button>
+              </div>
+            </div>
             <button
               type="button"
               id="useCurrentPageButton"
@@ -33,6 +54,20 @@
             >
               Current Page
             </button>
+          </div>
+          <div id="listUrlMode" class="hidden">
+            <textarea
+              id="urlListTextarea"
+              placeholder="Enter URLs, one per line:
+https://example.com/page1
+https://example.com/page2
+https://example.com/page3"
+              rows="8"
+            ></textarea>
+            <p class="helper-text">
+              In list mode, each URL will be scraped individually without
+              following links
+            </p>
           </div>
         </div>
 
@@ -66,6 +101,32 @@
             <input type="checkbox" id="extractMetadata" checked />
             <label for="extractMetadata">Extract Metadata</label>
           </div>
+          <div class="checkbox-row">
+            <input type="checkbox" id="saveIndividualFiles" />
+            <label for="saveIndividualFiles"
+              >Save Individual Files per Page</label
+            >
+          </div>
+          <div class="checkbox-row">
+            <input type="checkbox" id="crawlSitemap" />
+            <label for="crawlSitemap">Crawl sitemap.xml</label>
+            <div class="sitemap-buttons hidden" id="sitemapButtons">
+              <button
+                type="button"
+                id="runSitemapButton"
+                class="sitemap-button"
+              >
+                Run
+              </button>
+              <button
+                type="button"
+                id="extractSitemapButton"
+                class="sitemap-button"
+              >
+                Extract
+              </button>
+            </div>
+          </div>
         </div>
 
         <button type="button" id="advancedToggle" class="toggle-button">
@@ -96,6 +157,27 @@
               max="5000"
               value="500"
             />
+          </div>
+
+          <div class="form-group">
+            <label for="webhookUrl">Webhook URL (optional)</label>
+            <input
+              type="url"
+              id="webhookUrl"
+              placeholder="https://your-webhook.com/endpoint"
+            />
+          </div>
+
+          <div class="form-group checkboxes">
+            <h4>Analysis Options</h4>
+            <div class="checkbox-row">
+              <input type="checkbox" id="keywordDensity" />
+              <label for="keywordDensity">Calculate Keyword Density</label>
+            </div>
+            <div class="checkbox-row">
+              <input type="checkbox" id="brokenLinkChecker" />
+              <label for="brokenLinkChecker">Check for Broken Links</label>
+            </div>
           </div>
         </div>
 

@@ -52,14 +52,116 @@ let activeCrawl = {
   queue: [],
   visited: new Set(),
   results: [],
+  brokenLinks: [],
+  keywordData: {},
+  crawlsByDomain: new Map(), // Store results by domain for individual file saving
 };
 
 // Handle messages from popup or content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "startCrawl") {
     startCrawling(message.settings);
+  } else if (message.action === "validateSitemaps") {
+    validateSitemaps(message.urls).then((result) => {
+      sendResponse(result);
+    });
+    return true; // Keep message channel open for async response
+  } else if (message.action === "extractSitemapContent") {
+    extractSitemapContent(message.urls, message.settings).then((result) => {
+      sendResponse(result);
+    });
+    return true; // Keep message channel open for async response
   }
 });
+
+// Function to validate sitemaps and extract URLs
+async function validateSitemaps(urls) {
+  const sitemapData = {};
+  let totalUrls = 0;
+  let validSitemaps = 0;
+
+  try {
+    for (const baseUrl of urls) {
+      const sitemapUrls = [
+        `${baseUrl}/sitemap.xml`,
+        `${baseUrl}/sitemap_index.xml`,
+        `${baseUrl}/sitemap.xml.gz`,
+      ];
+
+      let found = false;
+
+      for (const sitemapUrl of sitemapUrls) {
+        try {
+          console.log(`Checking sitemap: ${sitemapUrl}`);
+          const response = await fetch(sitemapUrl);
+
+          if (response.ok) {
+            const text = await response.text();
+            const extractedUrls = [];
+
+            // Check if it's a sitemap index
+            if (text.includes("<sitemapindex")) {
+              const sitemapsList = extractSitemapsFromIndex(text);
+
+              // Fetch each sitemap in the index
+              for (const subSitemapUrl of sitemapsList) {
+                try {
+                  const subResponse = await fetch(subSitemapUrl);
+                  if (subResponse.ok) {
+                    const subText = await subResponse.text();
+                    const subUrls = extractUrlsFromSitemap(subText);
+                    extractedUrls.push(...subUrls);
+                  }
+                } catch (e) {
+                  console.warn(
+                    `Error fetching sub-sitemap ${subSitemapUrl}:`,
+                    e
+                  );
+                }
+              }
+            } else {
+              // Regular sitemap
+              const urls = extractUrlsFromSitemap(text);
+              extractedUrls.push(...urls);
+            }
+
+            if (extractedUrls.length > 0) {
+              sitemapData[baseUrl] = {
+                sitemapUrl: sitemapUrl,
+                urls: extractedUrls,
+              };
+              totalUrls += extractedUrls.length;
+              validSitemaps++;
+              found = true;
+              break;
+            }
+          }
+        } catch (error) {
+          console.error(`Error checking ${sitemapUrl}:`, error);
+        }
+      }
+
+      if (!found) {
+        sitemapData[baseUrl] = {
+          sitemapUrl: null,
+          urls: [],
+        };
+      }
+    }
+
+    return {
+      success: true,
+      sitemapData: sitemapData,
+      totalUrls: totalUrls,
+      validSitemaps: validSitemaps,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.message,
+    };
+  }
+}
 
 // Main function to start the crawling process
 async function startCrawling(settings) {
@@ -67,10 +169,14 @@ async function startCrawling(settings) {
   activeCrawl = {
     inProgress: true,
     processed: 0,
-    total: 1, // Start with at least the base URL
-    queue: [settings.baseUrl],
+    total: 0,
+    queue: [],
     visited: new Set(),
     results: [],
+    brokenLinks: [],
+    keywordData: {},
+    crawlsByDomain: new Map(),
+    perUrlProcessed: new Map(), // Track pages processed per base URL
     settings: settings,
   };
 
@@ -78,70 +184,159 @@ async function startCrawling(settings) {
   sendProgressUpdate("Starting crawl");
 
   try {
-    // Process the queue until it's empty or we reach the maximum pages
-    while (
-      activeCrawl.queue.length > 0 &&
-      activeCrawl.processed < settings.maxPages
-    ) {
-      const url = activeCrawl.queue.shift();
+    // Process each base URL separately with its own max pages limit
+    for (const baseUrl of settings.urls) {
+      updateCurrentAction(`Processing base URL: ${baseUrl}`);
 
-      // Skip if already visited
-      if (activeCrawl.visited.has(url)) {
-        continue;
+      // Initialize counter for this base URL
+      activeCrawl.perUrlProcessed.set(baseUrl, 0);
+
+      // Create a queue for this specific base URL
+      const urlQueue = [];
+
+      // Check if we should crawl sitemap
+      if (settings.crawlSitemap) {
+        const sitemapUrls = await getSitemapUrls(baseUrl, settings);
+        // Add sitemap URLs to this URL's queue with depth calculated from base URL
+        sitemapUrls.forEach((url) => {
+          if (!activeCrawl.visited.has(url)) {
+            const depth = calculateDepthFromBase(baseUrl, url);
+            urlQueue.push({ url: url, depth: depth, baseUrl: baseUrl });
+          }
+        });
+      } else if (settings.urlMode === "list") {
+        // In list mode, only add this specific URL with depth 0
+        if (!activeCrawl.visited.has(baseUrl)) {
+          urlQueue.push({ url: baseUrl, depth: 0, baseUrl: baseUrl });
+        }
+      } else {
+        // Add base URL to queue
+        if (!activeCrawl.visited.has(baseUrl)) {
+          urlQueue.push({ url: baseUrl, depth: 0, baseUrl: baseUrl });
+        }
       }
 
-      // Mark as visited
-      activeCrawl.visited.add(url);
+      // Process this URL's queue up to maxPages per URL
+      while (
+        urlQueue.length > 0 &&
+        activeCrawl.perUrlProcessed.get(baseUrl) < settings.maxPages
+      ) {
+        const { url, depth, baseUrl: currentBaseUrl } = urlQueue.shift();
 
-      // Update current action
-      updateCurrentAction(`Fetching ${url}`);
+        // Skip if already visited
+        if (activeCrawl.visited.has(url)) {
+          continue;
+        }
 
-      // Process the page
-      try {
-        const pageData = await processPage(url, settings);
-        activeCrawl.results.push(pageData);
+        // Mark as visited
+        activeCrawl.visited.add(url);
 
-        // Extract links if we're not at max depth
-        if (pageData.depth < settings.maxDepth) {
-          updateCurrentAction(`Extracting links from ${url}`);
-          const newLinks = await extractLinks(pageData.html, url, settings);
+        // Update current action
+        updateCurrentAction(`Fetching ${url}`);
 
-          // Add new links to the queue
-          newLinks.forEach((link) => {
-            if (
-              !activeCrawl.visited.has(link) &&
-              !activeCrawl.queue.includes(link) &&
-              activeCrawl.queue.length + activeCrawl.visited.size <
-                settings.maxPages
-            ) {
-              activeCrawl.queue.push(link);
-              activeCrawl.total++;
+        // Process the page
+        try {
+          const pageData = await processPage(url, settings, depth);
+          pageData.baseUrl = currentBaseUrl; // Add base URL reference
+          activeCrawl.results.push(pageData);
+
+          // Store by domain if individual files option is enabled
+          if (settings.saveIndividualFiles) {
+            const urlObj = new URL(url);
+            const domain = urlObj.hostname;
+            if (!activeCrawl.crawlsByDomain.has(domain)) {
+              activeCrawl.crawlsByDomain.set(domain, []);
             }
-          });
-        }
+            activeCrawl.crawlsByDomain.get(domain).push(pageData);
+          }
 
-        // Update progress
-        activeCrawl.processed++;
-        sendProgressUpdate(`Processed ${url}`);
+          // Extract links if we're not at max depth and not in list mode
+          if (depth < settings.maxDepth && settings.urlMode !== "list") {
+            updateCurrentAction(`Extracting links from ${url}`);
+            const newLinks = await extractLinks(pageData.html, url, settings);
 
-        // Respect the rate limit
-        if (settings.delayMs > 0 && activeCrawl.queue.length > 0) {
-          updateCurrentAction(`Rate limiting (${settings.delayMs}ms delay)`);
-          await new Promise((resolve) => setTimeout(resolve, settings.delayMs));
+            // Add new links to the queue for this base URL
+            newLinks.forEach((link) => {
+              if (
+                !activeCrawl.visited.has(link) &&
+                !urlQueue.some((item) => item.url === link) &&
+                activeCrawl.perUrlProcessed.get(currentBaseUrl) <
+                  settings.maxPages
+              ) {
+                const linkDepth = calculateDepthFromBase(currentBaseUrl, link);
+
+                // Only add links that are within the allowed depth and valid
+                if (linkDepth >= 0 && linkDepth <= settings.maxDepth) {
+                  urlQueue.push({
+                    url: link,
+                    depth: linkDepth,
+                    baseUrl: currentBaseUrl,
+                  });
+                }
+              }
+            });
+          }
+
+          // Update progress
+          activeCrawl.processed++;
+          activeCrawl.perUrlProcessed.set(
+            currentBaseUrl,
+            activeCrawl.perUrlProcessed.get(currentBaseUrl) + 1
+          );
+          activeCrawl.total = settings.urls.length * settings.maxPages;
+          sendProgressUpdate(`Processed ${url}`);
+
+          // Respect the rate limit
+          if (settings.delayMs > 0 && urlQueue.length > 0) {
+            updateCurrentAction(`Rate limiting (${settings.delayMs}ms delay)`);
+            await new Promise((resolve) =>
+              setTimeout(resolve, settings.delayMs)
+            );
+          }
+        } catch (error) {
+          console.error(`Error processing ${url}:`, error);
+
+          // Track broken links if option is enabled
+          if (settings.brokenLinkChecker && error.message.includes("404")) {
+            activeCrawl.brokenLinks.push({
+              url: url,
+              error: error.message,
+              statusCode: 404,
+            });
+          }
+
+          activeCrawl.processed++;
+          activeCrawl.perUrlProcessed.set(
+            currentBaseUrl,
+            activeCrawl.perUrlProcessed.get(currentBaseUrl) + 1
+          );
+          sendProgressUpdate(`Error processing ${url}: ${error.message}`);
         }
-      } catch (error) {
-        console.error(`Error processing ${url}:`, error);
-        activeCrawl.processed++;
-        sendProgressUpdate(`Error processing ${url}: ${error.message}`);
       }
     }
 
-    // Crawl completed, generate output
-    updateCurrentAction("Generating text output");
-    const output = generateTextOutput();
+    // Perform analysis if enabled
+    if (settings.keywordDensity || settings.brokenLinkChecker) {
+      updateCurrentAction("Performing analysis");
+      performAnalysis(settings);
+    }
 
-    // Trigger download
-    downloadTextOutput(output);
+    // Generate outputs
+    updateCurrentAction("Generating outputs");
+
+    // Generate master text file
+    const masterOutput = generateTextOutput(settings);
+    downloadTextOutput(masterOutput, "master");
+
+    // Generate individual files if enabled
+    if (settings.saveIndividualFiles) {
+      await saveIndividualFiles();
+    }
+
+    // Send webhook notification if configured
+    if (settings.webhookUrl) {
+      await sendWebhookNotification(settings.webhookUrl);
+    }
 
     // Mark crawl as complete
     activeCrawl.inProgress = false;
@@ -154,20 +349,248 @@ async function startCrawling(settings) {
   }
 }
 
+// Helper function to calculate depth from base URL
+function calculateDepthFromBase(baseUrl, targetUrl) {
+  try {
+    const base = new URL(baseUrl);
+    const target = new URL(targetUrl);
+
+    // Must be same origin
+    if (base.origin !== target.origin) {
+      return -1;
+    }
+
+    // Normalize paths - ensure they end without trailing slash for comparison
+    const basePath = base.pathname.replace(/\/$/, "");
+    const targetPath = target.pathname.replace(/\/$/, "");
+
+    // Target must start with the base path
+    if (!targetPath.startsWith(basePath)) {
+      return -1; // Not under base URL
+    }
+
+    // If it's the exact same path, depth is 0
+    if (targetPath === basePath) {
+      return 0;
+    }
+
+    // Get the remaining path after the base
+    let remainingPath = targetPath.substring(basePath.length);
+
+    // Remove leading slash if present
+    if (remainingPath.startsWith("/")) {
+      remainingPath = remainingPath.substring(1);
+    }
+
+    // If no remaining path, it's the same URL (depth 0)
+    if (!remainingPath) {
+      return 0;
+    }
+
+    // Count the path segments in the remaining path
+    const segments = remainingPath.split("/").filter((s) => s.length > 0);
+    return segments.length;
+  } catch (e) {
+    return -1;
+  }
+}
+
+// Get sitemap URLs for a base URL
+async function getSitemapUrls(baseUrl, settings) {
+  const urls = [];
+
+  try {
+    const sitemapUrls = [
+      `${baseUrl}/sitemap.xml`,
+      `${baseUrl}/sitemap_index.xml`,
+      `${baseUrl}/sitemap.xml.gz`,
+    ];
+
+    for (const sitemapUrl of sitemapUrls) {
+      try {
+        updateCurrentAction(`Checking for sitemap at ${sitemapUrl}`);
+        const response = await fetch(sitemapUrl);
+
+        if (response.ok) {
+          const text = await response.text();
+
+          // Check if it's a sitemap index (contains other sitemaps)
+          if (text.includes("<sitemapindex")) {
+            const sitemapUrls = extractSitemapsFromIndex(text);
+            updateCurrentAction(
+              `Found sitemap index with ${sitemapUrls.length} sitemaps`
+            );
+
+            // Process each sitemap in the index
+            for (const sitemapUrl of sitemapUrls) {
+              try {
+                const sitemapResponse = await fetch(sitemapUrl);
+                if (sitemapResponse.ok) {
+                  const sitemapText = await sitemapResponse.text();
+                  const extractedUrls = extractUrlsFromSitemap(sitemapText);
+                  urls.push(...extractedUrls);
+                }
+              } catch (e) {
+                console.warn(`Error fetching sitemap ${sitemapUrl}:`, e);
+              }
+            }
+          } else {
+            // Regular sitemap with URLs
+            const extractedUrls = extractUrlsFromSitemap(text);
+            urls.push(...extractedUrls);
+            updateCurrentAction(
+              `Found ${extractedUrls.length} URLs in sitemap`
+            );
+          }
+
+          return urls; // Successfully found and processed sitemap
+        }
+      } catch (e) {
+        // Try next sitemap URL
+        continue;
+      }
+    }
+
+    updateCurrentAction(`No sitemap found for ${baseUrl}`);
+  } catch (error) {
+    console.error(`Error getting sitemap URLs for ${baseUrl}:`, error);
+  }
+
+  return urls;
+}
+
+// Function to crawl sitemap.xml
+async function crawlSitemap(baseUrl, settings) {
+  try {
+    const sitemapUrls = [
+      `${baseUrl}/sitemap.xml`,
+      `${baseUrl}/sitemap_index.xml`,
+      `${baseUrl}/sitemap.xml.gz`,
+    ];
+
+    let sitemapFound = false;
+
+    for (const sitemapUrl of sitemapUrls) {
+      try {
+        updateCurrentAction(`Checking for sitemap at ${sitemapUrl}`);
+        const response = await fetch(sitemapUrl);
+
+        if (response.ok) {
+          const text = await response.text();
+
+          // Check if it's a sitemap index (contains other sitemaps)
+          if (text.includes("<sitemapindex")) {
+            const sitemapUrls = extractSitemapsFromIndex(text);
+            updateCurrentAction(
+              `Found sitemap index with ${sitemapUrls.length} sitemaps`
+            );
+
+            // Process each sitemap in the index
+            for (const sitemapUrl of sitemapUrls) {
+              try {
+                const sitemapResponse = await fetch(sitemapUrl);
+                if (sitemapResponse.ok) {
+                  const sitemapText = await sitemapResponse.text();
+                  const urls = extractUrlsFromSitemap(sitemapText);
+
+                  // Add URLs to queue
+                  urls.forEach((url) => {
+                    if (!activeCrawl.visited.has(url)) {
+                      activeCrawl.queue.push({ url: url, depth: 0 });
+                      activeCrawl.total++;
+                    }
+                  });
+                }
+              } catch (e) {
+                console.warn(`Error fetching sitemap ${sitemapUrl}:`, e);
+              }
+            }
+          } else {
+            // Regular sitemap with URLs
+            const urls = extractUrlsFromSitemap(text);
+            updateCurrentAction(`Found ${urls.length} URLs in sitemap`);
+
+            // Add sitemap URLs to queue
+            urls.forEach((url) => {
+              if (!activeCrawl.visited.has(url)) {
+                activeCrawl.queue.push({ url: url, depth: 0 });
+                activeCrawl.total++;
+              }
+            });
+          }
+
+          sitemapFound = true;
+          return; // Successfully found and processed sitemap
+        }
+      } catch (e) {
+        // Try next sitemap URL
+        continue;
+      }
+    }
+
+    // No sitemap found - only add base URL if sitemap crawl option is not enabled
+    if (!sitemapFound) {
+      updateCurrentAction(`No sitemap found for ${baseUrl}`);
+      // Since crawlSitemap option is checked, don't add base URL
+      // The user specifically wants to crawl from sitemap only
+    }
+  } catch (error) {
+    console.error(`Error crawling sitemap for ${baseUrl}:`, error);
+    // Don't fall back to regular crawling when sitemap option is checked
+  }
+}
+
+// Extract sitemap URLs from sitemap index
+function extractSitemapsFromIndex(xml) {
+  const urls = [];
+  const sitemapRegex =
+    /<sitemap>[\s\S]*?<loc>(.*?)<\/loc>[\s\S]*?<\/sitemap>/gi;
+  let match;
+
+  while ((match = sitemapRegex.exec(xml)) !== null) {
+    if (match[1]) {
+      urls.push(match[1].trim());
+    }
+  }
+
+  return urls;
+}
+
+// Extract URLs from sitemap XML
+function extractUrlsFromSitemap(xml) {
+  const urls = [];
+  const urlRegex = /<loc>(.*?)<\/loc>/gi;
+  let match;
+
+  while ((match = urlRegex.exec(xml)) !== null) {
+    if (match[1]) {
+      urls.push(match[1].trim());
+    }
+  }
+
+  return urls;
+}
+
 // Process a single page
-async function processPage(url, settings) {
+async function processPage(url, settings, depth = 0) {
   updateCurrentAction(`Fetching content from ${url}`);
 
   try {
     // Fetch the page
     const response = await fetch(url);
+
+    // Check for 404 or other errors
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
     const html = await response.text();
 
     // Extract data based on settings
     const result = {
       url: url,
       timestamp: new Date().toISOString(),
-      depth: getUrlDepth(url, settings.baseUrl),
+      depth: depth,
       title: extractTitle(html) || "",
     };
 
@@ -178,6 +601,11 @@ async function processPage(url, settings) {
       updateCurrentAction(`Extracting text content from ${url}`);
       // Extract structured text content
       result.text = extractStructuredText(html, url);
+
+      // Calculate keyword density if enabled
+      if (settings.keywordDensity && result.text) {
+        result.keywordDensity = calculateKeywordDensity(result.text);
+      }
     }
 
     if (settings.extractMetadata) {
@@ -192,10 +620,113 @@ async function processPage(url, settings) {
       };
     }
 
+    // Check for broken links if enabled
+    if (settings.brokenLinkChecker) {
+      await checkPageForBrokenLinks(html, url);
+    }
+
     return result;
   } catch (error) {
     console.error(`Error in processPage for ${url}:`, error);
     throw error;
+  }
+}
+
+// Calculate keyword density
+function calculateKeywordDensity(text) {
+  // Clean and split text into words
+  const words = text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word.length > 2); // Ignore very short words
+
+  // Count word frequency
+  const wordCount = {};
+  const totalWords = words.length;
+
+  words.forEach((word) => {
+    wordCount[word] = (wordCount[word] || 0) + 1;
+  });
+
+  // Calculate density and sort by frequency
+  const keywordDensity = Object.entries(wordCount)
+    .map(([word, count]) => ({
+      word,
+      count,
+      density: ((count / totalWords) * 100).toFixed(2) + "%",
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 20); // Top 20 keywords
+
+  return keywordDensity;
+}
+
+// Check page for broken links
+async function checkPageForBrokenLinks(html, baseUrl) {
+  const linkRegex = /<a\s+(?:[^>]*?\s+)?href=["']([^"']+)["'][^>]*>/gi;
+  const links = [];
+  let match;
+
+  while ((match = linkRegex.exec(html)) !== null) {
+    if (match[1]) {
+      try {
+        const absoluteUrl = new URL(match[1], baseUrl).href;
+        if (absoluteUrl.startsWith("http")) {
+          links.push(absoluteUrl);
+        }
+      } catch (e) {
+        // Invalid URL
+      }
+    }
+  }
+
+  // Check each link (limited to avoid too many requests)
+  const linksToCheck = links.slice(0, 10); // Check first 10 links
+
+  for (const link of linksToCheck) {
+    try {
+      const response = await fetch(link, { method: "HEAD" });
+      if (!response.ok) {
+        activeCrawl.brokenLinks.push({
+          url: link,
+          foundOn: baseUrl,
+          statusCode: response.status,
+        });
+      }
+    } catch (error) {
+      // Network error, consider it broken
+      activeCrawl.brokenLinks.push({
+        url: link,
+        foundOn: baseUrl,
+        error: error.message,
+      });
+    }
+  }
+}
+
+// Perform analysis
+function performAnalysis(settings) {
+  if (settings.keywordDensity) {
+    // Aggregate keyword data across all pages
+    const allKeywords = {};
+
+    activeCrawl.results.forEach((page) => {
+      if (page.keywordDensity) {
+        page.keywordDensity.forEach((kw) => {
+          if (!allKeywords[kw.word]) {
+            allKeywords[kw.word] = 0;
+          }
+          allKeywords[kw.word] += kw.count;
+        });
+      }
+    });
+
+    // Sort and store top keywords
+    activeCrawl.keywordData = Object.entries(allKeywords)
+      .map(([word, count]) => ({ word, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 50);
   }
 }
 
@@ -565,18 +1096,21 @@ function extractLinks(html, baseUrl, settings) {
 
     // Filter links based on settings
     return links.filter((url) => {
-      // Only keep URLs from the same domain
+      // Only keep URLs from the same domain if not crawling multiple URLs
       try {
         const urlObj = new URL(url);
-        const baseUrlObj = new URL(baseUrl);
 
-        // Must be same origin
-        if (urlObj.origin !== baseUrlObj.origin) {
-          return false;
-        }
+        // Check if URL belongs to any of the base URLs' domains
+        const belongsToBaseDomain = settings.urls.some((baseUrl) => {
+          try {
+            const baseUrlObj = new URL(baseUrl);
+            return urlObj.origin === baseUrlObj.origin;
+          } catch (e) {
+            return false;
+          }
+        });
 
-        // Skip anchors on the same page
-        if (urlObj.pathname === baseUrlObj.pathname && urlObj.hash) {
+        if (!belongsToBaseDomain) {
           return false;
         }
 
@@ -630,7 +1164,7 @@ function extractMetaContent(html, name) {
     // Try Open Graph (og:) properties
     if (name.startsWith("og:")) {
       metaRegex = new RegExp(
-        `<meta\\s+(?:[^>]*?\\s+)?property=["']${name}["']\\s+(?:[^>]*?\\s+)?content=["']([^"']*)["'][^>]*>`,
+        `<meta\\s+(?:[^>]*?\\s+)?property=["']${name}["']\\s+(?:[^>]*?\\s+)?content=["']([^"']*)['"'][^>]*>`,
         "i"
       );
       match = html.match(metaRegex);
@@ -638,7 +1172,7 @@ function extractMetaContent(html, name) {
       if (!match) {
         // Try with different order of attributes
         metaRegex = new RegExp(
-          `<meta\\s+(?:[^>]*?\\s+)?content=["']([^"']*)["']\\s+(?:[^>]*?\\s+)?property=["']${name}["'][^>]*>`,
+          `<meta\\s+(?:[^>]*?\\s+)?content=["']([^"']*)['"']\\s+(?:[^>]*?\\s+)?property=["']${name}["'][^>]*>`,
           "i"
         );
         match = html.match(metaRegex);
@@ -655,63 +1189,67 @@ function extractMetaContent(html, name) {
   return "";
 }
 
-// Helper function to calculate URL depth relative to base URL
-function getUrlDepth(url, baseUrl) {
-  try {
-    const urlObj = new URL(url);
-    const baseUrlObj = new URL(baseUrl);
-
-    // If different domains, return max depth
-    if (urlObj.hostname !== baseUrlObj.hostname) {
-      return 999;
-    }
-
-    // Calculate path depth difference
-    const urlPath = urlObj.pathname.split("/").filter(Boolean);
-    const basePath = baseUrlObj.pathname.split("/").filter(Boolean);
-
-    // Calculate how many segments deeper we are than the base URL
-    let depth = 0;
-    for (let i = 0; i < urlPath.length; i++) {
-      if (i >= basePath.length || urlPath[i] !== basePath[i]) {
-        depth++;
-      }
-    }
-
-    return depth;
-  } catch (e) {
-    return 0;
-  }
-}
-
 // Generate the final output as plain text
-function generateTextOutput() {
+function generateTextOutput(settings) {
   let output = "";
 
   // Add metadata header
   output += "LINKHARVEST EXTRACTION RESULTS\n";
   output += "==============================\n\n";
-  output += `Base URL: ${activeCrawl.settings.baseUrl}\n`;
+  output += `Base URLs: ${settings.urls.join(", ")}\n`;
   output += `Crawl Date: ${new Date().toLocaleString()}\n`;
   output += `Total Pages Processed: ${activeCrawl.processed}\n`;
   output += "\n";
   output += "CRAWL SETTINGS:\n";
-  output += `- Max Depth: ${activeCrawl.settings.maxDepth}\n`;
-  output += `- Max Pages: ${activeCrawl.settings.maxPages}\n`;
-  output += `- Extract HTML: ${
-    activeCrawl.settings.extractHtml ? "Yes" : "No"
-  }\n`;
-  output += `- Extract Text: ${
-    activeCrawl.settings.extractText ? "Yes" : "No"
-  }\n`;
-  output += `- Extract Metadata: ${
-    activeCrawl.settings.extractMetadata ? "Yes" : "No"
-  }\n`;
-  if (activeCrawl.settings.urlPattern) {
-    output += `- URL Pattern Filter: ${activeCrawl.settings.urlPattern}\n`;
+  output += `- Max Depth: ${settings.maxDepth}\n`;
+  output += `- Max Pages: ${settings.maxPages}\n`;
+  output += `- Extract HTML: ${settings.extractHtml ? "Yes" : "No"}\n`;
+  output += `- Extract Text: ${settings.extractText ? "Yes" : "No"}\n`;
+  output += `- Extract Metadata: ${settings.extractMetadata ? "Yes" : "No"}\n`;
+  if (settings.urlPattern) {
+    output += `- URL Pattern Filter: ${settings.urlPattern}\n`;
+  }
+  if (settings.crawlSitemap) {
+    output += `- Crawl Sitemap: Yes\n`;
+  }
+  if (settings.keywordDensity) {
+    output += `- Keyword Density Analysis: Yes\n`;
+  }
+  if (settings.brokenLinkChecker) {
+    output += `- Broken Link Check: Yes\n`;
   }
   output += "\n";
   output += "=" * 50 + "\n\n";
+
+  // Add analysis results if enabled
+  if (settings.keywordDensity && activeCrawl.keywordData.length > 0) {
+    output += "TOP KEYWORDS ACROSS ALL PAGES:\n";
+    output += "-" * 30 + "\n";
+    activeCrawl.keywordData.slice(0, 20).forEach((kw) => {
+      output += `${kw.word}: ${kw.count} occurrences\n`;
+    });
+    output += "\n";
+    output += "=" * 50 + "\n\n";
+  }
+
+  if (settings.brokenLinkChecker && activeCrawl.brokenLinks.length > 0) {
+    output += "BROKEN LINKS FOUND:\n";
+    output += "-" * 20 + "\n";
+    activeCrawl.brokenLinks.forEach((link) => {
+      output += `URL: ${link.url}\n`;
+      if (link.foundOn) {
+        output += `Found on: ${link.foundOn}\n`;
+      }
+      if (link.statusCode) {
+        output += `Status Code: ${link.statusCode}\n`;
+      }
+      if (link.error) {
+        output += `Error: ${link.error}\n`;
+      }
+      output += "\n";
+    });
+    output += "=" * 50 + "\n\n";
+  }
 
   // Process each page
   activeCrawl.results.forEach((page, index) => {
@@ -721,12 +1259,363 @@ function generateTextOutput() {
     output += `Timestamp: ${new Date(page.timestamp).toLocaleString()}\n\n`;
 
     // Include text content if extracted
-    if (activeCrawl.settings.extractText && page.text) {
+    if (settings.extractText && page.text) {
       output += page.text + "\n\n";
     }
 
     // Include metadata if extracted
-    if (activeCrawl.settings.extractMetadata && page.metadata) {
+    if (settings.extractMetadata && page.metadata) {
+      const hasMetadata = Object.values(page.metadata).some((v) => v);
+      if (hasMetadata) {
+        output += "METADATA:\n";
+        if (page.metadata.description) {
+          output += `Description: ${page.metadata.description}\n`;
+        }
+        if (page.metadata.keywords) {
+          output += `Keywords: ${page.metadata.keywords}\n`;
+        }
+        if (page.metadata.ogTitle) {
+          output += `OG Title: ${page.metadata.ogTitle}\n`;
+        }
+        if (page.metadata.ogDescription) {
+          output += `OG Description: ${page.metadata.ogDescription}\n`;
+        }
+        if (page.metadata.ogImage) {
+          output += `OG Image: ${page.metadata.ogImage}\n`;
+        }
+        output += "\n";
+      }
+    }
+
+    // Include keyword density for this page if enabled
+    if (settings.keywordDensity && page.keywordDensity) {
+      output += "TOP KEYWORDS FOR THIS PAGE:\n";
+      page.keywordDensity.slice(0, 10).forEach((kw) => {
+        output += `- ${kw.word}: ${kw.count} times (${kw.density})\n`;
+      });
+      output += "\n";
+    }
+
+    output += "=" * 50 + "\n\n";
+  });
+
+  return output;
+}
+
+// Download the output as a text file
+function downloadTextOutput(textContent, type = "master") {
+  updateCurrentAction("Preparing text file for download");
+
+  try {
+    // Create a data URL for text file
+    const dataUrl = `data:text/plain;charset=utf-8,${encodeURIComponent(
+      textContent
+    )}`;
+
+    let filename;
+    if (type === "master") {
+      const baseUrl = new URL(activeCrawl.settings.urls[0]);
+      const hostname = baseUrl.hostname.replace(/[^a-z0-9]/gi, "_");
+      filename = `linkharvest_${hostname}_${new Date()
+        .toISOString()
+        .slice(0, 10)}.txt`;
+    } else {
+      filename = type;
+    }
+
+    chrome.downloads.download(
+      {
+        url: dataUrl,
+        filename: filename,
+        saveAs: type === "master",
+      },
+      (downloadId) => {
+        if (chrome.runtime.lastError) {
+          console.error("Download error:", chrome.runtime.lastError);
+          updateCurrentAction(
+            "Error creating download: " + chrome.runtime.lastError.message
+          );
+        } else {
+          updateCurrentAction("Text file download started successfully");
+        }
+      }
+    );
+  } catch (error) {
+    console.error("Download creation error:", error);
+    updateCurrentAction("Error creating download: " + error.message);
+  }
+}
+
+// Save individual files per domain
+async function saveIndividualFiles() {
+  updateCurrentAction("Saving individual files per domain");
+
+  // Collect all files first
+  const allFiles = [];
+
+  for (const [domain, pages] of activeCrawl.crawlsByDomain.entries()) {
+    const domainFolder = domain.replace(/[^a-z0-9]/gi, "_");
+
+    // Process each page
+    for (const page of pages) {
+      let filename = "";
+      try {
+        const urlObj = new URL(page.url);
+        const pathname = urlObj.pathname === "/" ? "/index" : urlObj.pathname;
+        filename = pathname.replace(/[^a-z0-9]/gi, "_");
+        if (!filename) filename = "page";
+      } catch (e) {
+        filename = "page_" + Math.random().toString(36).substring(7);
+      }
+
+      let content = "";
+      content += `URL: ${page.url}\n`;
+      content += `Crawled: ${new Date(page.timestamp).toLocaleString()}\n`;
+      content += `Title: ${page.title}\n`;
+      content += "\n" + "=" * 50 + "\n\n";
+
+      if (page.text) {
+        content += page.text;
+      }
+
+      if (page.metadata && activeCrawl.settings.extractMetadata) {
+        content += "\n\nMETADATA:\n";
+        content += JSON.stringify(page.metadata, null, 2);
+      }
+
+      if (page.keywordDensity && activeCrawl.settings.keywordDensity) {
+        content += "\n\nKEYWORD DENSITY:\n";
+        page.keywordDensity.slice(0, 10).forEach((kw) => {
+          content += `${kw.word}: ${kw.count} times (${kw.density})\n`;
+        });
+      }
+
+      // Store file data
+      allFiles.push({
+        domain: domainFolder,
+        filename: filename,
+        content: content,
+      });
+    }
+  }
+
+  // Download files with delay to avoid Chrome's download limit
+  updateCurrentAction(`Preparing to save ${allFiles.length} individual files`);
+
+  for (let i = 0; i < allFiles.length; i++) {
+    const file = allFiles[i];
+    const dataUrl = `data:text/plain;charset=utf-8,${encodeURIComponent(
+      file.content
+    )}`;
+    const fullFilename = `LinkHarvest/${file.domain}/${file.filename}.txt`;
+
+    // Create download with delay
+    await new Promise((resolve) => {
+      chrome.downloads.download(
+        {
+          url: dataUrl,
+          filename: fullFilename,
+          saveAs: false,
+          conflictAction: "uniquify",
+        },
+        (downloadId) => {
+          if (chrome.runtime.lastError) {
+            console.error(
+              `Error downloading ${fullFilename}:`,
+              chrome.runtime.lastError
+            );
+          }
+          // Add a small delay between downloads to avoid Chrome's download limit
+          setTimeout(resolve, 100);
+        }
+      );
+    });
+
+    // Update progress
+    updateCurrentAction(`Saved file ${i + 1} of ${allFiles.length}`);
+  }
+
+  updateCurrentAction("All individual files saved successfully");
+}
+
+// Send webhook notification
+async function sendWebhookNotification(webhookUrl) {
+  updateCurrentAction("Sending webhook notification");
+
+  try {
+    const summary = {
+      timestamp: new Date().toISOString(),
+      urls_crawled: activeCrawl.settings.urls,
+      pages_processed: activeCrawl.processed,
+      total_pages_found: activeCrawl.total,
+      broken_links_found: activeCrawl.brokenLinks.length,
+      crawl_settings: {
+        max_depth: activeCrawl.settings.maxDepth,
+        max_pages: activeCrawl.settings.maxPages,
+        sitemap_crawl: activeCrawl.settings.crawlSitemap,
+        keyword_analysis: activeCrawl.settings.keywordDensity,
+        broken_link_check: activeCrawl.settings.brokenLinkChecker,
+      },
+    };
+
+    if (activeCrawl.keywordData.length > 0) {
+      summary.top_keywords = activeCrawl.keywordData.slice(0, 10);
+    }
+
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(summary),
+    });
+
+    if (!response.ok) {
+      console.error("Webhook notification failed:", response.statusText);
+    } else {
+      updateCurrentAction("Webhook notification sent successfully");
+    }
+  } catch (error) {
+    console.error("Error sending webhook:", error);
+    updateCurrentAction("Failed to send webhook notification");
+  }
+}
+
+// Send progress updates to the popup
+function sendProgressUpdate(status) {
+  chrome.runtime.sendMessage({
+    action: "updateProgress",
+    processed: activeCrawl.processed,
+    total: activeCrawl.total,
+    status: status,
+  });
+}
+
+// Send error message to the popup
+function sendCrawlError(error) {
+  chrome.runtime.sendMessage({
+    action: "crawlError",
+    error: error,
+  });
+}
+
+// Function to extract content from sitemap URLs
+async function extractSitemapContent(urls, settings) {
+  try {
+    // First get all sitemap URLs
+    const sitemapData = await validateSitemaps(urls);
+
+    if (!sitemapData.success || sitemapData.totalUrls === 0) {
+      return {
+        success: false,
+        error: "No valid sitemap URLs found",
+      };
+    }
+
+    // Collect all URLs from all sitemaps
+    const allUrls = [];
+    for (const [baseUrl, data] of Object.entries(sitemapData.sitemapData)) {
+      if (data.urls && data.urls.length > 0) {
+        allUrls.push(...data.urls);
+      }
+    }
+
+    // Limit to maxPages
+    const urlsToProcess = allUrls.slice(0, settings.maxPages);
+
+    // Process each URL
+    const results = [];
+    let processed = 0;
+
+    for (const url of urlsToProcess) {
+      try {
+        updateCurrentAction(
+          `Extracting content from ${url} (${processed + 1}/${
+            urlsToProcess.length
+          })`
+        );
+
+        const pageData = await processPage(url, settings, 0);
+        results.push(pageData);
+        processed++;
+
+        // Respect rate limit
+        if (settings.delayMs > 0 && processed < urlsToProcess.length) {
+          await new Promise((resolve) => setTimeout(resolve, settings.delayMs));
+        }
+      } catch (error) {
+        console.error(`Error processing ${url}:`, error);
+        processed++;
+      }
+    }
+
+    // Generate output
+    const output = generateSitemapTextOutput(settings, results, sitemapData);
+
+    // Download the file
+    const timestamp = new Date().toISOString().slice(0, 10);
+    const filename = `sitemap_extract_${timestamp}.txt`;
+
+    const dataUrl = `data:text/plain;charset=utf-8,${encodeURIComponent(
+      output
+    )}`;
+
+    chrome.downloads.download({
+      url: dataUrl,
+      filename: filename,
+      saveAs: true,
+    });
+
+    return {
+      success: true,
+      totalUrls: processed,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.message,
+    };
+  }
+}
+
+// Generate text output for sitemap extraction
+function generateSitemapTextOutput(settings, results, sitemapData) {
+  let output = "";
+
+  // Add header
+  output += "SITEMAP CONTENT EXTRACTION RESULTS\n";
+  output += "==================================\n\n";
+  output += `Extraction Date: ${new Date().toLocaleString()}\n`;
+  output += `Total Pages Extracted: ${results.length}\n\n`;
+
+  // Add sitemap info
+  output += "SITEMAPS PROCESSED:\n";
+  output += "-" * 20 + "\n";
+  for (const [baseUrl, data] of Object.entries(sitemapData.sitemapData)) {
+    if (data.sitemapUrl) {
+      output += `Base URL: ${baseUrl}\n`;
+      output += `Sitemap: ${data.sitemapUrl}\n`;
+      output += `URLs found: ${data.urls.length}\n\n`;
+    }
+  }
+
+  output += "=" * 50 + "\n\n";
+
+  // Process each page
+  results.forEach((page, index) => {
+    output += `PAGE ${index + 1} OF ${results.length}\n`;
+    output += "-" * 40 + "\n";
+    output += `URL: ${page.url}\n`;
+    output += `Title: ${page.title || "No title"}\n`;
+    output += `Timestamp: ${new Date(page.timestamp).toLocaleString()}\n\n`;
+
+    // Include text content if extracted
+    if (settings.extractText && page.text) {
+      output += page.text + "\n\n";
+    }
+
+    // Include metadata if extracted
+    if (settings.extractMetadata && page.metadata) {
       const hasMetadata = Object.values(page.metadata).some((v) => v);
       if (hasMetadata) {
         output += "METADATA:\n";
@@ -753,62 +1642,6 @@ function generateTextOutput() {
   });
 
   return output;
-}
-
-// Download the output as a text file
-function downloadTextOutput(textContent) {
-  updateCurrentAction("Preparing text file for download");
-
-  try {
-    // Create a data URL for text file
-    const dataUrl = `data:text/plain;charset=utf-8,${encodeURIComponent(
-      textContent
-    )}`;
-    const baseUrl = new URL(activeCrawl.settings.baseUrl);
-    const hostname = baseUrl.hostname.replace(/[^a-z0-9]/gi, "_");
-    const filename = `linkharvest_${hostname}_${new Date()
-      .toISOString()
-      .slice(0, 10)}.txt`;
-
-    chrome.downloads.download(
-      {
-        url: dataUrl,
-        filename: filename,
-        saveAs: true,
-      },
-      (downloadId) => {
-        if (chrome.runtime.lastError) {
-          console.error("Download error:", chrome.runtime.lastError);
-          updateCurrentAction(
-            "Error creating download: " + chrome.runtime.lastError.message
-          );
-        } else {
-          updateCurrentAction("Text file download started successfully");
-        }
-      }
-    );
-  } catch (error) {
-    console.error("Download creation error:", error);
-    updateCurrentAction("Error creating download: " + error.message);
-  }
-}
-
-// Send progress updates to the popup
-function sendProgressUpdate(status) {
-  chrome.runtime.sendMessage({
-    action: "updateProgress",
-    processed: activeCrawl.processed,
-    total: activeCrawl.total,
-    status: status,
-  });
-}
-
-// Send error message to the popup
-function sendCrawlError(error) {
-  chrome.runtime.sendMessage({
-    action: "crawlError",
-    error: error,
-  });
 }
 
 // Update the current action text in the popup and overlay
