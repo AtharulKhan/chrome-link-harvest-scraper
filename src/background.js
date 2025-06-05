@@ -74,6 +74,122 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+// Function to extract URLs from Google search results
+async function extractGoogleSearchUrls(searchUrl) {
+  try {
+    updateCurrentAction(`Fetching Google search results from ${searchUrl}`);
+
+    const response = await fetch(searchUrl);
+    const html = await response.text();
+
+    // Extract all links from search results
+    const urls = [];
+
+    // Pattern to match Google search result links
+    // Google uses various patterns, we'll try to catch the main ones
+    const linkPatterns = [/<a[^>]+href="([^"]+)"[^>]*>/gi, /href="([^"]+)"/gi];
+
+    for (const pattern of linkPatterns) {
+      let match;
+      while ((match = pattern.exec(html)) !== null) {
+        const url = match[1];
+
+        // Clean up the URL
+        if (url.startsWith("/url?q=")) {
+          // Extract actual URL from Google redirect
+          const actualUrl = url.match(/\/url\?q=([^&]+)/);
+          if (actualUrl && actualUrl[1]) {
+            const decodedUrl = decodeURIComponent(actualUrl[1]);
+            if (isValidNonGoogleUrl(decodedUrl)) {
+              urls.push(decodedUrl);
+            }
+          }
+        } else if (isValidNonGoogleUrl(url)) {
+          urls.push(url);
+        }
+      }
+    }
+
+    // Remove duplicates and normalize URLs (remove query strings and fragments)
+    const normalizedUrls = urls.map((url) => {
+      try {
+        const urlObj = new URL(url);
+        // Remove query parameters and fragments
+        urlObj.search = "";
+        urlObj.hash = "";
+        return urlObj.href;
+      } catch (e) {
+        return url;
+      }
+    });
+
+    // Remove duplicates
+    const uniqueUrls = [...new Set(normalizedUrls)];
+
+    updateCurrentAction(
+      `Found ${uniqueUrls.length} non-Google URLs in search results`
+    );
+    return uniqueUrls;
+  } catch (error) {
+    console.error("Error extracting Google search URLs:", error);
+    throw error;
+  }
+}
+
+// Helper function to check if URL is valid and not from Google
+function isValidNonGoogleUrl(url) {
+  if (!url || typeof url !== "string") return false;
+
+  // Must be a full URL
+  if (!url.match(/^https?:\/\//i)) return false;
+
+  // Exclude Google domains
+  const googleDomains = [
+    "google.com",
+    "google.ca",
+    "google.co.uk",
+    "google.de",
+    "google.fr",
+    "google.es",
+    "google.it",
+    "google.nl",
+    "google.se",
+    "google.no",
+    "google.dk",
+    "google.fi",
+    "google.co.jp",
+    "google.com.au",
+    "google.co.nz",
+    "google.co.in",
+    "google.com.br",
+    "google.com.mx",
+    "google.com.ar",
+    "google.co.za",
+    "googleapis.com",
+    "googleusercontent.com",
+    "googlevideo.com",
+    "gstatic.com",
+    "youtube.com",
+    "youtu.be",
+  ];
+
+  try {
+    const urlObj = new URL(url);
+    const hostname = urlObj.hostname.toLowerCase();
+
+    // Check if it's a Google domain
+    for (const googleDomain of googleDomains) {
+      if (hostname === googleDomain || hostname.endsWith("." + googleDomain)) {
+        return false;
+      }
+    }
+
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 // Function to validate sitemaps and extract URLs
 async function validateSitemaps(urls) {
   const sitemapData = {};
@@ -184,6 +300,47 @@ async function startCrawling(settings) {
   sendProgressUpdate("Starting crawl");
 
   try {
+    // Handle Google search mode
+    if (settings.urlMode === "google") {
+      let urlsToScrape = [];
+
+      if (settings.googleMode === "currentPage") {
+        // Extract URLs from current Google search page
+        const googleUrl = settings.urls[0];
+        updateCurrentAction(`Extracting URLs from Google search page`);
+        urlsToScrape = await extractGoogleSearchUrls(googleUrl);
+      } else {
+        // Process multiple search queries
+        for (const query of settings.urls) {
+          updateCurrentAction(`Searching Google for: ${query}`);
+          const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(
+            query
+          )}`;
+          const searchResults = await extractGoogleSearchUrls(searchUrl);
+          urlsToScrape.push(...searchResults);
+
+          // Add delay between Google searches to avoid rate limiting
+          if (settings.delayMs > 0) {
+            await new Promise((resolve) =>
+              setTimeout(resolve, settings.delayMs)
+            );
+          }
+        }
+      }
+
+      // Remove duplicates
+      urlsToScrape = [...new Set(urlsToScrape)];
+
+      updateCurrentAction(
+        `Found ${urlsToScrape.length} unique non-Google URLs to scrape`
+      );
+
+      // Now update settings to process these URLs
+      settings.urls = urlsToScrape;
+      settings.urlMode = "list"; // Process as list mode
+      settings.maxDepth = 0; // No depth for Google results
+    }
+
     // Process each base URL separately with its own max pages limit
     for (const baseUrl of settings.urls) {
       updateCurrentAction(`Processing base URL: ${baseUrl}`);
@@ -634,12 +791,140 @@ async function processPage(url, settings, depth = 0) {
 
 // Calculate keyword density
 function calculateKeywordDensity(text) {
+  // Common stop words to exclude
+  const stopWords = new Set([
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "but",
+    "in",
+    "on",
+    "at",
+    "to",
+    "for",
+    "of",
+    "with",
+    "by",
+    "from",
+    "up",
+    "about",
+    "into",
+    "through",
+    "during",
+    "before",
+    "after",
+    "above",
+    "below",
+    "between",
+    "under",
+    "again",
+    "further",
+    "then",
+    "once",
+    "here",
+    "there",
+    "when",
+    "where",
+    "why",
+    "how",
+    "all",
+    "both",
+    "each",
+    "few",
+    "more",
+    "most",
+    "other",
+    "some",
+    "such",
+    "no",
+    "nor",
+    "not",
+    "only",
+    "own",
+    "same",
+    "so",
+    "than",
+    "too",
+    "very",
+    "can",
+    "will",
+    "just",
+    "should",
+    "could",
+    "would",
+    "may",
+    "might",
+    "must",
+    "shall",
+    "should",
+    "now",
+    "is",
+    "am",
+    "are",
+    "was",
+    "were",
+    "be",
+    "have",
+    "has",
+    "had",
+    "do",
+    "does",
+    "did",
+    "will",
+    "would",
+    "could",
+    "should",
+    "may",
+    "might",
+    "must",
+    "can",
+    "this",
+    "that",
+    "these",
+    "those",
+    "i",
+    "you",
+    "he",
+    "she",
+    "it",
+    "we",
+    "they",
+    "them",
+    "their",
+    "what",
+    "which",
+    "who",
+    "whom",
+    "this",
+    "that",
+    "these",
+    "those",
+    "myself",
+    "yourself",
+    "himself",
+    "herself",
+    "itself",
+    "ourselves",
+    "themselves",
+    "its",
+    "our",
+    "your",
+    "his",
+    "her",
+    "my",
+    "me",
+    "him",
+    "us",
+  ]);
+
   // Clean and split text into words
   const words = text
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
-    .filter((word) => word.length > 2); // Ignore very short words
+    .filter((word) => word.length > 2 && !stopWords.has(word)); // Ignore short words and stop words
 
   // Count word frequency
   const wordCount = {};
@@ -1114,16 +1399,29 @@ function extractLinks(html, baseUrl, settings) {
           return false;
         }
 
-        // Apply URL pattern filter if specified
-        if (settings.urlPattern) {
-          try {
-            const regex = new RegExp(settings.urlPattern);
-            if (!regex.test(url)) {
-              return false;
+        // Apply URL filter based on mode
+        if (settings.urlFilter && settings.urlFilter.mode !== "none") {
+          if (settings.urlFilter.mode === "contains") {
+            // Check if URL contains the specified text (case-insensitive)
+            if (settings.urlFilter.contains) {
+              const searchText = settings.urlFilter.contains.toLowerCase();
+              if (!url.toLowerCase().includes(searchText)) {
+                return false;
+              }
             }
-          } catch (e) {
-            // Invalid regex, ignore the filter
-            console.warn("Invalid URL pattern regex:", e);
+          } else if (settings.urlFilter.mode === "regex") {
+            // Apply regex pattern filter
+            if (settings.urlFilter.pattern) {
+              try {
+                const regex = new RegExp(settings.urlFilter.pattern);
+                if (!regex.test(url)) {
+                  return false;
+                }
+              } catch (e) {
+                // Invalid regex, ignore the filter
+                console.warn("Invalid URL pattern regex:", e);
+              }
+            }
           }
         }
 

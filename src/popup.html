@@ -27,6 +27,10 @@
               <input type="radio" name="urlMode" value="list" />
               <span>URL List (one per line)</span>
             </label>
+            <label class="mode-toggle">
+              <input type="radio" name="urlMode" value="google" />
+              <span>Google Search Results</span>
+            </label>
           </div>
           <div id="singleUrlMode">
             <div id="urlsContainer">
@@ -68,6 +72,38 @@ https://example.com/page3"
               In list mode, each URL will be scraped individually without
               following links
             </p>
+          </div>
+          <div id="googleSearchMode" class="hidden">
+            <div class="google-search-options">
+              <label class="mode-toggle">
+                <input type="radio" name="googleMode" value="queries" checked />
+                <span>Search Queries</span>
+              </label>
+              <label class="mode-toggle">
+                <input type="radio" name="googleMode" value="currentPage" />
+                <span>Current Page (if Google Search)</span>
+              </label>
+            </div>
+            <div id="googleQueriesMode">
+              <textarea
+                id="googleQueriesTextarea"
+                placeholder="Enter search queries, one per line:
+addiction rehab toronto
+mental health services vancouver
+substance abuse treatment calgary"
+                rows="8"
+              ></textarea>
+              <p class="helper-text">
+                Each query will be searched on Google, and all non-Google result
+                URLs will be scraped
+              </p>
+            </div>
+            <div id="googleCurrentPageMode" class="hidden">
+              <p class="helper-text">
+                Click "Start Harvesting" to scrape all non-Google URLs from the
+                current Google search page
+              </p>
+            </div>
           </div>
         </div>
 
@@ -135,8 +171,39 @@ https://example.com/page3"
 
         <div id="advancedSettings" class="advanced-settings hidden">
           <div class="form-group">
-            <label for="urlPattern">URL Pattern (Regex, optional)</label>
-            <input type="text" id="urlPattern" placeholder="e.g. /blog|news/" />
+            <label>URL Filter</label>
+            <div class="url-filter-options">
+              <label class="mode-toggle">
+                <input type="radio" name="urlFilterMode" value="none" checked />
+                <span>No Filter</span>
+              </label>
+              <label class="mode-toggle">
+                <input type="radio" name="urlFilterMode" value="contains" />
+                <span>URL Contains</span>
+              </label>
+              <label class="mode-toggle">
+                <input type="radio" name="urlFilterMode" value="regex" />
+                <span>Regex Pattern</span>
+              </label>
+            </div>
+            <div id="urlFilterContains" class="hidden">
+              <input
+                type="text"
+                id="urlContainsText"
+                placeholder="e.g. blog, news, article"
+              />
+              <p class="helper-text">
+                Enter text that URLs must contain (case-insensitive)
+              </p>
+            </div>
+            <div id="urlFilterRegex" class="hidden">
+              <input
+                type="text"
+                id="urlPattern"
+                placeholder="e.g. /blog|news/"
+              />
+              <p class="helper-text">Enter a regular expression pattern</p>
+            </div>
           </div>
 
           <div class="form-group">

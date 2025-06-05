@@ -35,6 +35,17 @@ document.addEventListener("DOMContentLoaded", () => {
   const currentPageOnlyButton = document.getElementById(
     "currentPageOnlyButton"
   );
+  const googleSearchMode = document.getElementById("googleSearchMode");
+  const googleQueriesMode = document.getElementById("googleQueriesMode");
+  const googleCurrentPageMode = document.getElementById(
+    "googleCurrentPageMode"
+  );
+  const googleQueriesTextarea = document.getElementById(
+    "googleQueriesTextarea"
+  );
+  const urlFilterContains = document.getElementById("urlFilterContains");
+  const urlFilterRegex = document.getElementById("urlFilterRegex");
+  const urlContainsText = document.getElementById("urlContainsText");
 
   // Load saved settings
   loadSettings();
@@ -106,9 +117,44 @@ document.addEventListener("DOMContentLoaded", () => {
       if (e.target.value === "single") {
         singleUrlMode.classList.remove("hidden");
         listUrlMode.classList.add("hidden");
-      } else {
+        googleSearchMode.classList.add("hidden");
+      } else if (e.target.value === "list") {
         singleUrlMode.classList.add("hidden");
         listUrlMode.classList.remove("hidden");
+        googleSearchMode.classList.add("hidden");
+      } else if (e.target.value === "google") {
+        singleUrlMode.classList.add("hidden");
+        listUrlMode.classList.add("hidden");
+        googleSearchMode.classList.remove("hidden");
+      }
+      saveSettings();
+    });
+  });
+
+  // Handle Google mode toggle
+  document.querySelectorAll('input[name="googleMode"]').forEach((radio) => {
+    radio.addEventListener("change", (e) => {
+      if (e.target.value === "queries") {
+        googleQueriesMode.classList.remove("hidden");
+        googleCurrentPageMode.classList.add("hidden");
+      } else {
+        googleQueriesMode.classList.add("hidden");
+        googleCurrentPageMode.classList.remove("hidden");
+      }
+      saveSettings();
+    });
+  });
+
+  // Handle URL filter mode toggle
+  document.querySelectorAll('input[name="urlFilterMode"]').forEach((radio) => {
+    radio.addEventListener("change", (e) => {
+      urlFilterContains.classList.add("hidden");
+      urlFilterRegex.classList.add("hidden");
+
+      if (e.target.value === "contains") {
+        urlFilterContains.classList.remove("hidden");
+      } else if (e.target.value === "regex") {
+        urlFilterRegex.classList.remove("hidden");
       }
       saveSettings();
     });
@@ -317,6 +363,27 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       });
       return urls;
+    } else if (urlMode === "google") {
+      // Google search mode
+      const googleMode = document.querySelector(
+        'input[name="googleMode"]:checked'
+      ).value;
+
+      if (googleMode === "currentPage") {
+        // Return current tab URL if it's a Google search page
+        return []; // Will be handled specially in startCrawl
+      } else {
+        // Return Google search queries
+        const queries = [];
+        const lines = googleQueriesTextarea.value.split("\n");
+        lines.forEach((line) => {
+          const query = line.trim();
+          if (query) {
+            queries.push(query);
+          }
+        });
+        return queries;
+      }
     } else {
       // Get URLs from single inputs
       const urlInputs = urlsContainer.querySelectorAll(".url-input");
@@ -333,40 +400,130 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Function to start the crawl
   function startCrawl() {
-    const urls = getAllUrls();
-
-    // Validate URLs
-    if (urls.length === 0) {
-      showError(
-        "Please enter at least one valid URL starting with http:// or https://"
-      );
-      return;
-    }
-
-    // Get URL mode
+    // Get URL mode first
     const urlMode = document.querySelector(
       'input[name="urlMode"]:checked'
     ).value;
 
-    // Get settings
-    const settings = {
-      urls: urls, // Changed from baseUrl to urls array
-      urlMode: urlMode,
-      maxDepth: urlMode === "list" ? 0 : parseInt(depthInput.value) || 0, // No depth for list mode
-      maxPages: parseInt(maxPagesInput.value) || 50,
-      extractHtml: extractHtmlCheck.checked,
-      extractText: extractTextCheck.checked,
-      extractMetadata: extractMetadataCheck.checked,
-      saveIndividualFiles: saveIndividualFilesCheck.checked,
-      crawlSitemap: crawlSitemapCheck.checked,
-      urlPattern: urlPatternInput.value.trim(),
-      selector: selectorInput.value.trim(),
-      delayMs: parseInt(rateDelayInput.value) || 0,
-      webhookUrl: webhookUrlInput.value.trim(),
-      keywordDensity: keywordDensityCheck.checked,
-      brokenLinkChecker: brokenLinkCheckerCheck.checked,
-    };
+    // Handle Google search mode specially
+    if (urlMode === "google") {
+      const googleMode = document.querySelector(
+        'input[name="googleMode"]:checked'
+      ).value;
 
+      if (googleMode === "currentPage") {
+        // Check if current page is a Google search page
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          if (
+            tabs[0] &&
+            tabs[0].url &&
+            tabs[0].url.includes("google.com/search")
+          ) {
+            const settings = {
+              urls: [tabs[0].url],
+              urlMode: "google",
+              googleMode: "currentPage",
+              maxDepth: 0, // No depth for Google search scraping
+              maxPages: parseInt(maxPagesInput.value) || 50,
+              extractHtml: extractHtmlCheck.checked,
+              extractText: extractTextCheck.checked,
+              extractMetadata: extractMetadataCheck.checked,
+              saveIndividualFiles: saveIndividualFilesCheck.checked,
+              crawlSitemap: false, // No sitemap for Google search
+              urlPattern: urlPatternInput.value.trim(),
+              selector: selectorInput.value.trim(),
+              delayMs: parseInt(rateDelayInput.value) || 0,
+              webhookUrl: webhookUrlInput.value.trim(),
+              keywordDensity: keywordDensityCheck.checked,
+              brokenLinkChecker: brokenLinkCheckerCheck.checked,
+            };
+
+            startCrawlWithSettings(settings);
+          } else {
+            showError(
+              "Current page is not a Google search page. Please navigate to a Google search results page."
+            );
+          }
+        });
+        return;
+      } else {
+        // Handle queries mode
+        const queries = getAllUrls(); // This returns queries when in google mode
+        if (queries.length === 0) {
+          showError("Please enter at least one search query");
+          return;
+        }
+
+        const settings = {
+          urls: queries, // These are actually queries
+          urlMode: "google",
+          googleMode: "queries",
+          maxDepth: 0, // No depth for Google search scraping
+          maxPages: parseInt(maxPagesInput.value) || 50,
+          extractHtml: extractHtmlCheck.checked,
+          extractText: extractTextCheck.checked,
+          extractMetadata: extractMetadataCheck.checked,
+          saveIndividualFiles: saveIndividualFilesCheck.checked,
+          crawlSitemap: false, // No sitemap for Google search
+          urlPattern: urlPatternInput.value.trim(),
+          selector: selectorInput.value.trim(),
+          delayMs: parseInt(rateDelayInput.value) || 0,
+          webhookUrl: webhookUrlInput.value.trim(),
+          keywordDensity: keywordDensityCheck.checked,
+          brokenLinkChecker: brokenLinkCheckerCheck.checked,
+        };
+
+        startCrawlWithSettings(settings);
+      }
+    } else {
+      // Normal URL crawling
+      const urls = getAllUrls();
+
+      // Validate URLs
+      if (urls.length === 0) {
+        showError(
+          "Please enter at least one valid URL starting with http:// or https://"
+        );
+        return;
+      }
+
+      // Get URL filter settings
+      const urlFilterMode =
+        document.querySelector('input[name="urlFilterMode"]:checked')?.value ||
+        "none";
+
+      let urlFilterSettings = { mode: urlFilterMode };
+      if (urlFilterMode === "contains") {
+        urlFilterSettings.contains = urlContainsText.value.trim();
+      } else if (urlFilterMode === "regex") {
+        urlFilterSettings.pattern = urlPatternInput.value.trim();
+      }
+
+      // Get settings
+      const settings = {
+        urls: urls,
+        urlMode: urlMode,
+        maxDepth: urlMode === "list" ? 0 : parseInt(depthInput.value) || 0,
+        maxPages: parseInt(maxPagesInput.value) || 50,
+        extractHtml: extractHtmlCheck.checked,
+        extractText: extractTextCheck.checked,
+        extractMetadata: extractMetadataCheck.checked,
+        saveIndividualFiles: saveIndividualFilesCheck.checked,
+        crawlSitemap: crawlSitemapCheck.checked,
+        urlFilter: urlFilterSettings,
+        selector: selectorInput.value.trim(),
+        delayMs: parseInt(rateDelayInput.value) || 0,
+        webhookUrl: webhookUrlInput.value.trim(),
+        keywordDensity: keywordDensityCheck.checked,
+        brokenLinkChecker: brokenLinkCheckerCheck.checked,
+      };
+
+      startCrawlWithSettings(settings);
+    }
+  }
+
+  // Helper function to start crawl with settings
+  function startCrawlWithSettings(settings) {
     // Save settings
     saveSettings();
 
@@ -377,7 +534,17 @@ document.addEventListener("DOMContentLoaded", () => {
     useCurrentPageButton.disabled = true;
 
     // Initialize the action text
-    updateCurrentAction(`Starting crawl of ${urls.length} URL(s)`);
+    if (settings.urlMode === "google") {
+      if (settings.googleMode === "queries") {
+        updateCurrentAction(
+          `Starting Google search crawl for ${settings.urls.length} queries`
+        );
+      } else {
+        updateCurrentAction(`Starting Google search page crawl`);
+      }
+    } else {
+      updateCurrentAction(`Starting crawl of ${settings.urls.length} URL(s)`);
+    }
 
     // Send message to background script to start the crawl
     chrome.runtime.sendMessage({
