@@ -26,6 +26,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const webhookUrlInput = document.getElementById("webhookUrl");
   const keywordDensityCheck = document.getElementById("keywordDensity");
   const brokenLinkCheckerCheck = document.getElementById("brokenLinkChecker");
+  const csvExportCheck = document.getElementById("csvExport");
   const progressContainer = document.getElementById("progressContainer");
   const progressBar = document.getElementById("progressBar");
   const progressText = document.getElementById("progressText");
@@ -140,6 +141,23 @@ document.addEventListener("DOMContentLoaded", () => {
       } else {
         googleQueriesMode.classList.add("hidden");
         googleCurrentPageMode.classList.remove("hidden");
+
+        // Check if current tab is Google search
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          if (
+            tabs[0] &&
+            tabs[0].url &&
+            tabs[0].url.includes("google.com/search")
+          ) {
+            currentActionText.textContent =
+              "Ready to scrape Google search results from current tab";
+            currentActionText.style.color = "#34a853";
+          } else {
+            currentActionText.textContent =
+              "Please navigate to a Google search results page";
+            currentActionText.style.color = "#d93025";
+          }
+        });
       }
       saveSettings();
     });
@@ -239,7 +257,16 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // For all input fields, save settings on change
-  document.querySelectorAll("input, select").forEach((input) => {
+  document.querySelectorAll("input, select, textarea").forEach((input) => {
+    // Skip URL mode radios and other radios that already have specific handlers
+    if (
+      input.type === "radio" &&
+      (input.name === "urlMode" ||
+        input.name === "googleMode" ||
+        input.name === "urlFilterMode")
+    ) {
+      return;
+    }
     input.addEventListener("change", saveSettings);
   });
 
@@ -436,6 +463,7 @@ document.addEventListener("DOMContentLoaded", () => {
               webhookUrl: webhookUrlInput.value.trim(),
               keywordDensity: keywordDensityCheck.checked,
               brokenLinkChecker: brokenLinkCheckerCheck.checked,
+              csvExport: csvExportCheck.checked,
             };
 
             startCrawlWithSettings(settings);
@@ -471,6 +499,7 @@ document.addEventListener("DOMContentLoaded", () => {
           webhookUrl: webhookUrlInput.value.trim(),
           keywordDensity: keywordDensityCheck.checked,
           brokenLinkChecker: brokenLinkCheckerCheck.checked,
+          csvExport: csvExportCheck.checked,
         };
 
         startCrawlWithSettings(settings);
@@ -516,6 +545,7 @@ document.addEventListener("DOMContentLoaded", () => {
         webhookUrl: webhookUrlInput.value.trim(),
         keywordDensity: keywordDensityCheck.checked,
         brokenLinkChecker: brokenLinkCheckerCheck.checked,
+        csvExport: csvExportCheck.checked,
       };
 
       startCrawlWithSettings(settings);
@@ -616,30 +646,54 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Function to save settings to chrome.storage
   function saveSettings() {
-    const urls = getAllUrls();
-    const urlMode = document.querySelector(
-      'input[name="urlMode"]:checked'
-    ).value;
-    const settings = {
-      urls: urls,
-      urlMode: urlMode,
-      urlListText: urlListTextarea.value,
-      depth: depthInput.value,
-      maxPages: maxPagesInput.value,
-      extractHtml: extractHtmlCheck.checked,
-      extractText: extractTextCheck.checked,
-      extractMetadata: extractMetadataCheck.checked,
-      saveIndividualFiles: saveIndividualFilesCheck.checked,
-      crawlSitemap: crawlSitemapCheck.checked,
-      urlPattern: urlPatternInput.value,
-      selector: selectorInput.value,
-      rateDelay: rateDelayInput.value,
-      webhookUrl: webhookUrlInput.value,
-      keywordDensity: keywordDensityCheck.checked,
-      brokenLinkChecker: brokenLinkCheckerCheck.checked,
-    };
+    try {
+      console.log("Saving settings...");
+      const urls = getAllUrls();
+      const urlMode = document.querySelector(
+        'input[name="urlMode"]:checked'
+      ).value;
 
-    chrome.storage.sync.set({ harvestSettings: settings });
+      // Log the CSV export state before saving
+      console.log("CSV Export checkbox state:", csvExportCheck.checked);
+
+      const settings = {
+        urls: urls,
+        urlMode: urlMode,
+        urlListText: urlListTextarea.value,
+        depth: depthInput.value,
+        maxPages: maxPagesInput.value,
+        extractHtml: extractHtmlCheck.checked,
+        extractText: extractTextCheck.checked,
+        extractMetadata: extractMetadataCheck.checked,
+        saveIndividualFiles: saveIndividualFilesCheck.checked,
+        crawlSitemap: crawlSitemapCheck.checked,
+        urlPattern: urlPatternInput.value,
+        selector: selectorInput.value,
+        rateDelay: rateDelayInput.value,
+        webhookUrl: webhookUrlInput.value,
+        keywordDensity: keywordDensityCheck.checked,
+        brokenLinkChecker: brokenLinkCheckerCheck.checked,
+        csvExport: csvExportCheck.checked,
+      };
+
+      console.log("Settings to save:", settings);
+
+      // Check storage size
+      const settingsString = JSON.stringify(settings);
+      console.log("Settings size:", settingsString.length, "bytes");
+
+      chrome.storage.sync.set({ harvestSettings: settings }, () => {
+        if (chrome.runtime.lastError) {
+          console.error("Error saving settings:", chrome.runtime.lastError);
+          // Don't reload settings on error as it causes checkbox to uncheck
+          alert("Error saving settings: " + chrome.runtime.lastError.message);
+        } else {
+          console.log("Settings saved successfully");
+        }
+      });
+    } catch (error) {
+      console.error("Error in saveSettings:", error);
+    }
   }
 
   // Function to load settings from chrome.storage
@@ -728,6 +782,8 @@ document.addEventListener("DOMContentLoaded", () => {
           keywordDensityCheck.checked = settings.keywordDensity;
         if (settings.brokenLinkChecker !== undefined)
           brokenLinkCheckerCheck.checked = settings.brokenLinkChecker;
+        if (settings.csvExport !== undefined)
+          csvExportCheck.checked = settings.csvExport;
       }
 
       // Add change listeners to all URL inputs

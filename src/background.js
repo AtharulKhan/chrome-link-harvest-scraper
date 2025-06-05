@@ -485,6 +485,11 @@ async function startCrawling(settings) {
     const masterOutput = generateTextOutput(settings);
     downloadTextOutput(masterOutput, "master");
 
+    // Generate CSV reports if CSV export is enabled
+    if (settings.csvExport) {
+      generateCSVReports(settings);
+    }
+
     // Generate individual files if enabled
     if (settings.saveIndividualFiles) {
       await saveIndividualFiles();
@@ -754,6 +759,15 @@ async function processPage(url, settings, depth = 0) {
     // Always store HTML for link extraction
     result.html = html;
 
+    // Perform SEO analysis
+    result.seoAnalysis = performSeoAnalysis(html, result.title);
+
+    // Extract links with anchor text
+    const linkAnalysis = extractLinksWithAnchorText(html, url);
+    result.internalLinks = linkAnalysis.internal;
+    result.externalLinks = linkAnalysis.external;
+    result.linkStats = linkAnalysis.stats;
+
     if (settings.extractText) {
       updateCurrentAction(`Extracting text content from ${url}`);
       // Extract structured text content
@@ -762,6 +776,7 @@ async function processPage(url, settings, depth = 0) {
       // Calculate keyword density if enabled
       if (settings.keywordDensity && result.text) {
         result.keywordDensity = calculateKeywordDensity(result.text);
+        result.ngramAnalysis = calculateNgramAnalysis(result.text);
       }
     }
 
@@ -945,6 +960,231 @@ function calculateKeywordDensity(text) {
     .slice(0, 20); // Top 20 keywords
 
   return keywordDensity;
+}
+
+// Perform SEO analysis on the page
+function performSeoAnalysis(html, title) {
+  const analysis = {
+    titleIssues: [],
+    metaDescriptionIssues: [],
+    headingIssues: [],
+  };
+
+  // Analyze title
+  if (!title) {
+    analysis.titleIssues.push("Missing title tag");
+  } else {
+    if (title.length < 30) {
+      analysis.titleIssues.push(
+        `Title too short (${title.length} chars, recommended: 30-60)`
+      );
+    } else if (title.length > 60) {
+      analysis.titleIssues.push(
+        `Title too long (${title.length} chars, recommended: 30-60)`
+      );
+    }
+  }
+
+  // Analyze meta description
+  const metaDescription = extractMetaContent(html, "description");
+  if (!metaDescription) {
+    analysis.metaDescriptionIssues.push("Missing meta description");
+  } else {
+    if (metaDescription.length < 120) {
+      analysis.metaDescriptionIssues.push(
+        `Meta description too short (${metaDescription.length} chars, recommended: 120-160)`
+      );
+    } else if (metaDescription.length > 160) {
+      analysis.metaDescriptionIssues.push(
+        `Meta description too long (${metaDescription.length} chars, recommended: 120-160)`
+      );
+    }
+  }
+
+  // Analyze H1 tags
+  const h1Matches = html.match(/<h1[^>]*>.*?<\/h1>/gi) || [];
+  if (h1Matches.length === 0) {
+    analysis.headingIssues.push("Missing H1 tag");
+  } else if (h1Matches.length > 1) {
+    analysis.headingIssues.push(`Multiple H1 tags found (${h1Matches.length})`);
+  }
+
+  return analysis;
+}
+
+// Extract links with anchor text and calculate statistics
+function extractLinksWithAnchorText(html, baseUrl) {
+  const linkRegex =
+    /<a\s+(?:[^>]*?\s+)?href=["']([^"']+)["'][^>]*>(.*?)<\/a>/gi;
+  const internal = [];
+  const external = [];
+  const anchorTexts = new Map();
+  let match;
+
+  try {
+    const base = new URL(baseUrl);
+
+    while ((match = linkRegex.exec(html)) !== null) {
+      const href = match[1];
+      const anchorContent = match[2];
+
+      // Extract text from anchor content (might contain HTML)
+      const anchorText = anchorContent
+        .replace(/<[^>]+>/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      if (href && !href.startsWith("#") && !href.startsWith("javascript:")) {
+        try {
+          const linkUrl = new URL(href, baseUrl);
+          const linkInfo = {
+            url: linkUrl.href,
+            anchorText: cleanHtmlEntities(anchorText) || "[No anchor text]",
+          };
+
+          if (linkUrl.origin === base.origin) {
+            internal.push(linkInfo);
+
+            // Track anchor text diversity for internal links
+            const key = anchorText.toLowerCase();
+            anchorTexts.set(key, (anchorTexts.get(key) || 0) + 1);
+          } else {
+            external.push(linkInfo);
+          }
+        } catch (e) {
+          // Invalid URL
+        }
+      }
+    }
+  } catch (e) {
+    console.error("Error extracting links:", e);
+  }
+
+  // Calculate statistics
+  const stats = {
+    internalCount: internal.length,
+    externalCount: external.length,
+    ratio:
+      internal.length > 0
+        ? (external.length / internal.length).toFixed(2)
+        : "N/A",
+    anchorTextDiversity: anchorTexts.size,
+    duplicateAnchors: Array.from(anchorTexts.entries())
+      .filter(([text, count]) => count > 1)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([text, count]) => ({ text, count })),
+  };
+
+  return { internal, external, stats };
+}
+
+// Calculate n-gram analysis (2-word and 3-word phrases)
+function calculateNgramAnalysis(text) {
+  const stopWords = new Set([
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "but",
+    "in",
+    "on",
+    "at",
+    "to",
+    "for",
+    "of",
+    "with",
+    "by",
+    "from",
+    "up",
+    "about",
+    "into",
+    "through",
+    "during",
+    "is",
+    "am",
+    "are",
+    "was",
+    "were",
+    "be",
+    "have",
+    "has",
+    "had",
+    "do",
+    "does",
+    "did",
+    "will",
+    "would",
+    "could",
+    "should",
+    "may",
+    "might",
+    "must",
+    "can",
+    "this",
+    "that",
+    "these",
+    "those",
+    "i",
+    "you",
+    "he",
+    "she",
+    "it",
+    "we",
+    "they",
+    "them",
+    "their",
+    "what",
+    "which",
+    "who",
+  ]);
+
+  // Clean and tokenize text
+  const words = text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word.length > 2);
+
+  // Generate 2-grams
+  const bigrams = {};
+  for (let i = 0; i < words.length - 1; i++) {
+    if (!stopWords.has(words[i]) && !stopWords.has(words[i + 1])) {
+      const bigram = `${words[i]} ${words[i + 1]}`;
+      bigrams[bigram] = (bigrams[bigram] || 0) + 1;
+    }
+  }
+
+  // Generate 3-grams
+  const trigrams = {};
+  for (let i = 0; i < words.length - 2; i++) {
+    // At least one word should not be a stop word
+    const hasNonStopWord =
+      !stopWords.has(words[i]) ||
+      !stopWords.has(words[i + 1]) ||
+      !stopWords.has(words[i + 2]);
+
+    if (hasNonStopWord) {
+      const trigram = `${words[i]} ${words[i + 1]} ${words[i + 2]}`;
+      trigrams[trigram] = (trigrams[trigram] || 0) + 1;
+    }
+  }
+
+  // Sort and get top n-grams
+  const topBigrams = Object.entries(bigrams)
+    .filter(([phrase, count]) => count > 1)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([phrase, count]) => ({ phrase, count }));
+
+  const topTrigrams = Object.entries(trigrams)
+    .filter(([phrase, count]) => count > 1)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([phrase, count]) => ({ phrase, count }));
+
+  return { bigrams: topBigrams, trigrams: topTrigrams };
 }
 
 // Check page for broken links
@@ -1556,6 +1796,47 @@ function generateTextOutput(settings) {
     output += `URL: ${page.url}\n`;
     output += `Timestamp: ${new Date(page.timestamp).toLocaleString()}\n\n`;
 
+    // Include SEO Analysis
+    if (page.seoAnalysis) {
+      output += "SEO ANALYSIS:\n";
+      if (page.seoAnalysis.titleIssues.length > 0) {
+        output += "Title Issues:\n";
+        page.seoAnalysis.titleIssues.forEach((issue) => {
+          output += `- ${issue}\n`;
+        });
+      }
+      if (page.seoAnalysis.metaDescriptionIssues.length > 0) {
+        output += "Meta Description Issues:\n";
+        page.seoAnalysis.metaDescriptionIssues.forEach((issue) => {
+          output += `- ${issue}\n`;
+        });
+      }
+      if (page.seoAnalysis.headingIssues.length > 0) {
+        output += "Heading Issues:\n";
+        page.seoAnalysis.headingIssues.forEach((issue) => {
+          output += `- ${issue}\n`;
+        });
+      }
+      output += "\n";
+    }
+
+    // Include Link Statistics
+    if (page.linkStats) {
+      output += "LINK STATISTICS:\n";
+      output += `- Internal Links: ${page.linkStats.internalCount}\n`;
+      output += `- External Links: ${page.linkStats.externalCount}\n`;
+      output += `- External/Internal Ratio: ${page.linkStats.ratio}\n`;
+      output += `- Unique Anchor Texts: ${page.linkStats.anchorTextDiversity}\n`;
+
+      if (page.linkStats.duplicateAnchors.length > 0) {
+        output += "Top Duplicate Anchor Texts:\n";
+        page.linkStats.duplicateAnchors.forEach((anchor) => {
+          output += `  - "${anchor.text}": ${anchor.count} times\n`;
+        });
+      }
+      output += "\n";
+    }
+
     // Include text content if extracted
     if (settings.extractText && page.text) {
       output += page.text + "\n\n";
@@ -1592,6 +1873,25 @@ function generateTextOutput(settings) {
         output += `- ${kw.word}: ${kw.count} times (${kw.density})\n`;
       });
       output += "\n";
+    }
+
+    // Include n-gram analysis if enabled
+    if (settings.keywordDensity && page.ngramAnalysis) {
+      if (page.ngramAnalysis.bigrams.length > 0) {
+        output += "TOP 2-WORD PHRASES:\n";
+        page.ngramAnalysis.bigrams.forEach((ngram) => {
+          output += `- "${ngram.phrase}": ${ngram.count} times\n`;
+        });
+        output += "\n";
+      }
+
+      if (page.ngramAnalysis.trigrams.length > 0) {
+        output += "TOP 3-WORD PHRASES:\n";
+        page.ngramAnalysis.trigrams.forEach((ngram) => {
+          output += `- "${ngram.phrase}": ${ngram.count} times\n`;
+        });
+        output += "\n";
+      }
     }
 
     output += "=" * 50 + "\n\n";
@@ -1940,6 +2240,282 @@ function generateSitemapTextOutput(settings, results, sitemapData) {
   });
 
   return output;
+}
+
+// Generate CSV reports for analysis data
+function generateCSVReports(settings) {
+  updateCurrentAction("Generating CSV reports");
+
+  const timestamp = new Date().toISOString().slice(0, 10);
+  const baseUrl = new URL(activeCrawl.settings.urls[0]);
+  const hostname = baseUrl.hostname.replace(/[^a-z0-9]/gi, "_");
+
+  // 1. SEO Analysis CSV
+  if (activeCrawl.results.some((r) => r.seoAnalysis)) {
+    const seoCSV = generateSEOAnalysisCSV();
+    downloadCSV(seoCSV, `seo_analysis_${hostname}_${timestamp}.csv`);
+  }
+
+  // 2. Keyword Density CSV
+  if (settings.keywordDensity) {
+    const keywordCSV = generateKeywordDensityCSV();
+    downloadCSV(keywordCSV, `keyword_density_${hostname}_${timestamp}.csv`);
+  }
+
+  // 3. N-gram Analysis CSV
+  if (
+    settings.keywordDensity &&
+    activeCrawl.results.some((r) => r.ngramAnalysis)
+  ) {
+    const ngramCSV = generateNgramCSV();
+    downloadCSV(ngramCSV, `ngram_analysis_${hostname}_${timestamp}.csv`);
+  }
+
+  // 4. Link Statistics CSV
+  if (activeCrawl.results.some((r) => r.linkStats)) {
+    const linkStatsCSV = generateLinkStatsCSV();
+    downloadCSV(linkStatsCSV, `link_statistics_${hostname}_${timestamp}.csv`);
+  }
+
+  // 5. Broken Links CSV
+  if (settings.brokenLinkChecker && activeCrawl.brokenLinks.length > 0) {
+    const brokenLinksCSV = generateBrokenLinksCSV();
+    downloadCSV(brokenLinksCSV, `broken_links_${hostname}_${timestamp}.csv`);
+  }
+
+  // 6. Scraped Text Content CSV
+  if (settings.extractText) {
+    const scrapedTextCSV = generateScrapedTextCSV();
+    downloadCSV(scrapedTextCSV, `scraped_text_${hostname}_${timestamp}.csv`);
+  }
+}
+
+// Generate SEO Analysis CSV
+function generateSEOAnalysisCSV() {
+  let csv =
+    "URL,Title,Title Length,Title Issues,Meta Description Length,Meta Description Issues,H1 Count,H1 Issues\n";
+
+  activeCrawl.results.forEach((page) => {
+    if (page.seoAnalysis) {
+      const titleIssues = page.seoAnalysis.titleIssues.join("; ") || "None";
+      const metaIssues =
+        page.seoAnalysis.metaDescriptionIssues.join("; ") || "None";
+      const h1Issues = page.seoAnalysis.headingIssues.join("; ") || "None";
+      const titleLength = page.title ? page.title.length : 0;
+      const metaDesc = extractMetaContent(page.html, "description");
+      const metaLength = metaDesc ? metaDesc.length : 0;
+      const h1Count = (page.html.match(/<h1[^>]*>.*?<\/h1>/gi) || []).length;
+
+      csv += `"${escapeCsvValue(page.url)}","${escapeCsvValue(
+        page.title || ""
+      )}",${titleLength},"${escapeCsvValue(
+        titleIssues
+      )}",${metaLength},"${escapeCsvValue(
+        metaIssues
+      )}",${h1Count},"${escapeCsvValue(h1Issues)}"\n`;
+    }
+  });
+
+  return csv;
+}
+
+// Generate Keyword Density CSV
+function generateKeywordDensityCSV() {
+  let csv = "Keyword,Total Count,Average Density,Pages Found On\n";
+
+  // Aggregate keyword data
+  const aggregatedKeywords = {};
+
+  activeCrawl.results.forEach((page) => {
+    if (page.keywordDensity) {
+      page.keywordDensity.forEach((kw) => {
+        if (!aggregatedKeywords[kw.word]) {
+          aggregatedKeywords[kw.word] = {
+            totalCount: 0,
+            pageCount: 0,
+            densities: [],
+          };
+        }
+        aggregatedKeywords[kw.word].totalCount += kw.count;
+        aggregatedKeywords[kw.word].pageCount++;
+        aggregatedKeywords[kw.word].densities.push(parseFloat(kw.density));
+      });
+    }
+  });
+
+  // Sort by total count and create CSV
+  Object.entries(aggregatedKeywords)
+    .sort((a, b) => b[1].totalCount - a[1].totalCount)
+    .slice(0, 100) // Top 100 keywords
+    .forEach(([word, data]) => {
+      const avgDensity = (
+        data.densities.reduce((a, b) => a + b, 0) / data.densities.length
+      ).toFixed(2);
+      csv += `"${escapeCsvValue(word)}",${data.totalCount},${avgDensity}%,${
+        data.pageCount
+      }\n`;
+    });
+
+  return csv;
+}
+
+// Generate N-gram Analysis CSV
+function generateNgramCSV() {
+  let csv = "Type,Phrase,Total Count,Pages Found On\n";
+
+  // Aggregate n-gram data
+  const aggregatedBigrams = {};
+  const aggregatedTrigrams = {};
+
+  activeCrawl.results.forEach((page) => {
+    if (page.ngramAnalysis) {
+      // Process bigrams
+      page.ngramAnalysis.bigrams.forEach((ngram) => {
+        if (!aggregatedBigrams[ngram.phrase]) {
+          aggregatedBigrams[ngram.phrase] = {
+            totalCount: 0,
+            pageCount: 0,
+          };
+        }
+        aggregatedBigrams[ngram.phrase].totalCount += ngram.count;
+        aggregatedBigrams[ngram.phrase].pageCount++;
+      });
+
+      // Process trigrams
+      page.ngramAnalysis.trigrams.forEach((ngram) => {
+        if (!aggregatedTrigrams[ngram.phrase]) {
+          aggregatedTrigrams[ngram.phrase] = {
+            totalCount: 0,
+            pageCount: 0,
+          };
+        }
+        aggregatedTrigrams[ngram.phrase].totalCount += ngram.count;
+        aggregatedTrigrams[ngram.phrase].pageCount++;
+      });
+    }
+  });
+
+  // Add bigrams to CSV
+  Object.entries(aggregatedBigrams)
+    .sort((a, b) => b[1].totalCount - a[1].totalCount)
+    .slice(0, 50)
+    .forEach(([phrase, data]) => {
+      csv += `"2-gram","${escapeCsvValue(phrase)}",${data.totalCount},${
+        data.pageCount
+      }\n`;
+    });
+
+  // Add trigrams to CSV
+  Object.entries(aggregatedTrigrams)
+    .sort((a, b) => b[1].totalCount - a[1].totalCount)
+    .slice(0, 50)
+    .forEach(([phrase, data]) => {
+      csv += `"3-gram","${escapeCsvValue(phrase)}",${data.totalCount},${
+        data.pageCount
+      }\n`;
+    });
+
+  return csv;
+}
+
+// Generate Link Statistics CSV
+function generateLinkStatsCSV() {
+  let csv =
+    "URL,Internal Links,External Links,External/Internal Ratio,Unique Anchor Texts,Most Duplicated Anchor\n";
+
+  activeCrawl.results.forEach((page) => {
+    if (page.linkStats) {
+      const mostDuplicated =
+        page.linkStats.duplicateAnchors.length > 0
+          ? `${page.linkStats.duplicateAnchors[0].text} (${page.linkStats.duplicateAnchors[0].count})`
+          : "None";
+
+      csv += `"${escapeCsvValue(page.url)}",${page.linkStats.internalCount},${
+        page.linkStats.externalCount
+      },"${page.linkStats.ratio}",${
+        page.linkStats.anchorTextDiversity
+      },"${escapeCsvValue(mostDuplicated)}"\n`;
+    }
+  });
+
+  return csv;
+}
+
+// Generate Broken Links CSV
+function generateBrokenLinksCSV() {
+  let csv = "Broken URL,Found On,Status Code,Error Message\n";
+
+  activeCrawl.brokenLinks.forEach((link) => {
+    const statusCode = link.statusCode || "N/A";
+    const error = link.error || "N/A";
+    csv += `"${escapeCsvValue(link.url)}","${escapeCsvValue(
+      link.foundOn || ""
+    )}","${statusCode}","${escapeCsvValue(error)}"\n`;
+  });
+
+  return csv;
+}
+
+// Generate Scraped Text Content CSV
+function generateScrapedTextCSV() {
+  let csv = "URL,Title,Text Content,Word Count\n";
+
+  activeCrawl.results.forEach((page) => {
+    if (page.text) {
+      // Clean text for CSV - remove newlines and limit length
+      const cleanedText = page.text
+        .replace(/\n+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .substring(0, 5000); // Limit to 5000 chars per cell for CSV compatibility
+
+      const wordCount = page.text
+        .split(/\s+/)
+        .filter((word) => word.length > 0).length;
+
+      csv += `"${escapeCsvValue(page.url)}","${escapeCsvValue(
+        page.title || ""
+      )}","${escapeCsvValue(cleanedText)}",${wordCount}\n`;
+    }
+  });
+
+  return csv;
+}
+
+// Helper function to escape CSV values
+function escapeCsvValue(value) {
+  if (typeof value !== "string") {
+    value = String(value);
+  }
+  // Replace quotes with double quotes and wrap in quotes if contains comma, newline, or quotes
+  if (value.includes('"') || value.includes(",") || value.includes("\n")) {
+    return value.replace(/"/g, '""');
+  }
+  return value;
+}
+
+// Download CSV file
+function downloadCSV(csvContent, filename) {
+  try {
+    const dataUrl = `data:text/csv;charset=utf-8,${encodeURIComponent(
+      csvContent
+    )}`;
+
+    chrome.downloads.download(
+      {
+        url: dataUrl,
+        filename: filename,
+        saveAs: false,
+      },
+      (downloadId) => {
+        if (chrome.runtime.lastError) {
+          console.error("CSV download error:", chrome.runtime.lastError);
+        }
+      }
+    );
+  } catch (error) {
+    console.error("Error creating CSV download:", error);
+  }
 }
 
 // Update the current action text in the popup and overlay
