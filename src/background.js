@@ -2048,31 +2048,46 @@ async function sendWebhookNotification(webhookUrl) {
   updateCurrentAction("Sending webhook notification");
 
   try {
-    const summary = {
+    // Combine all scraped text content into one string
+    let combinedText = "";
+
+    // Add header information
+    combinedText += "LINKHARVEST EXTRACTION RESULTS\n";
+    combinedText += "==============================\n\n";
+    combinedText += `Base URLs: ${activeCrawl.settings.urls.join(", ")}\n`;
+    combinedText += `Crawl Date: ${new Date().toLocaleString()}\n`;
+    combinedText += `Total Pages Processed: ${activeCrawl.processed}\n`;
+    combinedText += "\n" + "=" * 50 + "\n\n";
+
+    // Combine text content from all pages
+    activeCrawl.results.forEach((page, index) => {
+      combinedText += `PAGE ${index + 1} OF ${activeCrawl.results.length}\n`;
+      combinedText += "-" * 40 + "\n";
+      combinedText += `URL: ${page.url}\n`;
+      combinedText += `Title: ${page.title || "No title"}\n\n`;
+
+      // Add the text content if it exists
+      if (page.text) {
+        combinedText += page.text + "\n\n";
+      }
+
+      combinedText += "=" * 50 + "\n\n";
+    });
+
+    // Send the combined text as a simple payload
+    const payload = {
+      scraped_text: combinedText,
       timestamp: new Date().toISOString(),
       urls_crawled: activeCrawl.settings.urls,
       pages_processed: activeCrawl.processed,
-      total_pages_found: activeCrawl.total,
-      broken_links_found: activeCrawl.brokenLinks.length,
-      crawl_settings: {
-        max_depth: activeCrawl.settings.maxDepth,
-        max_pages: activeCrawl.settings.maxPages,
-        sitemap_crawl: activeCrawl.settings.crawlSitemap,
-        keyword_analysis: activeCrawl.settings.keywordDensity,
-        broken_link_check: activeCrawl.settings.brokenLinkChecker,
-      },
     };
-
-    if (activeCrawl.keywordData.length > 0) {
-      summary.top_keywords = activeCrawl.keywordData.slice(0, 10);
-    }
 
     const response = await fetch(webhookUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(summary),
+      body: JSON.stringify(payload),
     });
 
     if (!response.ok) {
