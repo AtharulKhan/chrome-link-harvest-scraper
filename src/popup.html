@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LinkHarvest</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>LinkHarvest</h1>
+        <p class="tagline">Website content crawler and exporter</p>
+      </header>
+
+      <div id="errorMessage" class="error-message hidden"></div>
+
+      <div class="form-section">
+        <div class="form-group">
+          <label for="urlInput">Website URL</label>
+          <div class="url-input-container">
+            <input
+              type="url"
+              id="urlInput"
+              placeholder="https://example.com"
+              required
+            />
+            <button
+              type="button"
+              id="useCurrentPageButton"
+              class="secondary-button"
+              title="Use current page URL"
+            >
+              Current Page
+            </button>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group half">
+            <label for="depthInput">Crawl Depth</label>
+            <input type="number" id="depthInput" min="1" max="5" value="2" />
+          </div>
+          <div class="form-group half">
+            <label for="maxPagesInput">Max Pages</label>
+            <input
+              type="number"
+              id="maxPagesInput"
+              min="1"
+              max="1000"
+              value="100"
+            />
+          </div>
+        </div>
+
+        <div class="form-group checkboxes">
+          <div class="checkbox-row">
+            <input type="checkbox" id="extractHtml" checked />
+            <label for="extractHtml">Extract HTML</label>
+          </div>
+          <div class="checkbox-row">
+            <input type="checkbox" id="extractText" checked />
+            <label for="extractText">Extract Text</label>
+          </div>
+          <div class="checkbox-row">
+            <input type="checkbox" id="extractMetadata" checked />
+            <label for="extractMetadata">Extract Metadata</label>
+          </div>
+        </div>
+
+        <button type="button" id="advancedToggle" class="toggle-button">
+          Show Advanced Options ▼
+        </button>
+
+        <div id="advancedSettings" class="advanced-settings hidden">
+          <div class="form-group">
+            <label for="urlPattern">URL Pattern (Regex, optional)</label>
+            <input type="text" id="urlPattern" placeholder="e.g. /blog|news/" />
+          </div>
+
+          <div class="form-group">
+            <label for="selector">Content Selector (CSS, optional)</label>
+            <input
+              type="text"
+              id="selector"
+              placeholder="e.g. article, .content, #main"
+            />
+          </div>
+
+          <div class="form-group">
+            <label for="rateDelay">Rate Limit (ms between requests)</label>
+            <input
+              type="number"
+              id="rateDelay"
+              min="0"
+              max="5000"
+              value="500"
+            />
+          </div>
+        </div>
+
+        <div class="button-group">
+          <button type="button" id="startButton" class="primary-button">
+            Start Harvesting
+          </button>
+          <button
+            type="button"
+            id="currentPageOnlyButton"
+            class="secondary-button"
+          >
+            Harvest Current Page Only
+          </button>
+        </div>
+      </div>
+
+      <div id="progressContainer" class="progress-container hidden">
+        <h3>Crawling in Progress</h3>
+        <div class="progress-bar-container">
+          <div id="progressBar" class="progress-bar"></div>
+        </div>
+        <div id="progressText" class="progress-text">
+          0 of 0 pages processed (0%)
+        </div>
+        <div id="statusText" class="status-text">Initializing...</div>
+        <div id="currentActionText" class="current-action-text">
+          Preparing...
+        </div>
+      </div>
+
+      <footer>
+        <p>LinkHarvest &#169; 2025 - <a href="#" id="helpLink">Help</a></p>
+      </footer>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
