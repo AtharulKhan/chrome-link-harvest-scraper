@@ -71,6 +71,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse(result);
     });
     return true; // Keep message channel open for async response
+  } else if (message.action === "extractSitemapMetadata") {
+    extractSitemapMetadataToCSV(message.urls, message.settings).then(
+      (result) => {
+        sendResponse(result);
+      }
+    );
+    return true; // Keep message channel open for async response
   }
 });
 
@@ -2552,4 +2559,217 @@ function updateCurrentAction(text) {
       }
     }
   });
+}
+
+// Function to extract sitemap metadata to CSV
+async function extractSitemapMetadataToCSV(urls, settings) {
+  try {
+    // First get all sitemap URLs
+    const sitemapData = await validateSitemaps(urls);
+
+    if (!sitemapData.success || sitemapData.totalUrls === 0) {
+      return {
+        success: false,
+        error: "No valid sitemap URLs found",
+      };
+    }
+
+    // Collect all URLs from all sitemaps
+    const allUrls = [];
+    for (const [baseUrl, data] of Object.entries(sitemapData.sitemapData)) {
+      if (data.urls && data.urls.length > 0) {
+        allUrls.push(...data.urls);
+      }
+    }
+
+    // Limit to maxPages
+    const urlsToProcess = allUrls.slice(0, settings.maxPages);
+
+    // Process each URL to extract metadata
+    const results = [];
+    let processed = 0;
+
+    for (const url of urlsToProcess) {
+      try {
+        updateCurrentAction(
+          `Extracting metadata from ${url} (${processed + 1}/${
+            urlsToProcess.length
+          })`
+        );
+
+        // Fetch the page
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const html = await response.text();
+
+        // Extract metadata
+        const pageData = {
+          url: url,
+          title: extractTitle(html) || "",
+          metaDescription: extractMetaContent(html, "description") || "",
+          headers: extractHeadersByType(html),
+          internalLinks: extractInternalLinksFlat(html, url),
+        };
+
+        results.push(pageData);
+        processed++;
+
+        // Respect rate limit
+        if (settings.delayMs > 0 && processed < urlsToProcess.length) {
+          await new Promise((resolve) => setTimeout(resolve, settings.delayMs));
+        }
+      } catch (error) {
+        console.error(`Error processing ${url}:`, error);
+
+        // Add error entry with properly initialized headers
+        results.push({
+          url: url,
+          title: "Error",
+          metaDescription: error.message,
+          headers: {
+            h1: [],
+            h2: [],
+            h3: [],
+            h4: [],
+            h5: [],
+            h6: [],
+          },
+          internalLinks: [],
+        });
+
+        processed++;
+      }
+    }
+
+    // Generate CSV
+    const csvContent = generateSitemapMetadataCSV(results);
+
+    // Download the file
+    const timestamp = new Date().toISOString().slice(0, 10);
+    const hostname = new URL(urls[0]).hostname.replace(/[^a-z0-9]/gi, "_");
+    const filename = `sitemap_metadata_${hostname}_${timestamp}.csv`;
+
+    const dataUrl = `data:text/csv;charset=utf-8,${encodeURIComponent(
+      csvContent
+    )}`;
+
+    chrome.downloads.download({
+      url: dataUrl,
+      filename: filename,
+      saveAs: true,
+    });
+
+    return {
+      success: true,
+      totalExtracted: processed,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.message,
+    };
+  }
+}
+
+// Extract headers grouped by type (h1, h2, h3, etc)
+function extractHeadersByType(html) {
+  const headers = {
+    h1: [],
+    h2: [],
+    h3: [],
+    h4: [],
+    h5: [],
+    h6: [],
+  };
+
+  // Extract each header type
+  for (let level = 1; level <= 6; level++) {
+    const regex = new RegExp(`<h${level}[^>]*>(.*?)<\/h${level}>`, "gi");
+    let match;
+
+    while ((match = regex.exec(html)) !== null) {
+      const content = match[1]
+        .replace(/<[^>]+>/g, "") // Remove HTML tags
+        .replace(/\s+/g, " ") // Normalize whitespace
+        .trim();
+
+      if (content) {
+        headers[`h${level}`].push(cleanHtmlEntities(content));
+      }
+    }
+  }
+
+  return headers;
+}
+
+// Extract internal links as a flat array of URLs
+function extractInternalLinksFlat(html, pageUrl) {
+  const linkRegex = /<a\s+(?:[^>]*?\s+)?href=["']([^"']+)["'][^>]*>/gi;
+  const internalLinks = [];
+  let match;
+
+  try {
+    const baseUrl = new URL(pageUrl);
+
+    while ((match = linkRegex.exec(html)) !== null) {
+      const href = match[1];
+
+      if (
+        href &&
+        !href.startsWith("#") &&
+        !href.startsWith("javascript:") &&
+        !href.startsWith("mailto:")
+      ) {
+        try {
+          const linkUrl = new URL(href, pageUrl);
+
+          // Check if it's internal
+          if (linkUrl.origin === baseUrl.origin) {
+            internalLinks.push(linkUrl.href);
+          }
+        } catch (e) {
+          // Invalid URL, skip
+        }
+      }
+    }
+  } catch (e) {
+    console.error("Error extracting internal links:", e);
+  }
+
+  // Remove duplicates
+  return [...new Set(internalLinks)];
+}
+
+// Generate CSV for sitemap metadata
+function generateSitemapMetadataCSV(results) {
+  let csv =
+    "URL,Title,Meta Description,H1s,H2s,H3s,H4s,H5s,H6s,Internal Links\n";
+
+  results.forEach((page) => {
+    // Join headers with semicolons
+    const h1s = page.headers.h1.join("; ");
+    const h2s = page.headers.h2.join("; ");
+    const h3s = page.headers.h3.join("; ");
+    const h4s = page.headers.h4.join("; ");
+    const h5s = page.headers.h5.join("; ");
+    const h6s = page.headers.h6.join("; ");
+
+    // Join internal links with semicolons
+    const internalLinks = page.internalLinks.join("; ");
+
+    csv += `"${escapeCsvValue(page.url)}","${escapeCsvValue(
+      page.title
+    )}","${escapeCsvValue(page.metaDescription)}","${escapeCsvValue(
+      h1s
+    )}","${escapeCsvValue(h2s)}","${escapeCsvValue(h3s)}","${escapeCsvValue(
+      h4s
+    )}","${escapeCsvValue(h5s)}","${escapeCsvValue(h6s)}","${escapeCsvValue(
+      internalLinks
+    )}"\n`;
+  });
+
+  return csv;
 }

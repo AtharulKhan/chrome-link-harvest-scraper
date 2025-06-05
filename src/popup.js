@@ -17,6 +17,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const sitemapButtons = document.getElementById("sitemapButtons");
   const runSitemapButton = document.getElementById("runSitemapButton");
   const extractSitemapButton = document.getElementById("extractSitemapButton");
+  const extractSitemapMetaButton = document.getElementById(
+    "extractSitemapMetaButton"
+  );
   const urlPatternInput = document.getElementById("urlPattern");
   const singleUrlMode = document.getElementById("singleUrlMode");
   const listUrlMode = document.getElementById("listUrlMode");
@@ -197,6 +200,58 @@ document.addEventListener("DOMContentLoaded", () => {
   extractSitemapButton.addEventListener("click", async () => {
     handleSitemapAction(true);
   });
+
+  // Extract sitemap metadata to CSV
+  extractSitemapMetaButton.addEventListener("click", async () => {
+    handleSitemapMetadataExtraction();
+  });
+
+  // Function to handle sitemap metadata extraction to CSV
+  async function handleSitemapMetadataExtraction() {
+    const urls = getAllUrls();
+
+    if (urls.length === 0) {
+      showError("Please enter at least one valid URL");
+      return;
+    }
+
+    extractSitemapMetaButton.disabled = true;
+    extractSitemapMetaButton.textContent = "Extracting...";
+
+    try {
+      // Send message to background script
+      chrome.runtime.sendMessage(
+        {
+          action: "extractSitemapMetadata",
+          urls: urls,
+          settings: {
+            delayMs: parseInt(rateDelayInput.value) || 500,
+            maxPages: parseInt(maxPagesInput.value) || 1000,
+          },
+        },
+        (response) => {
+          extractSitemapMetaButton.disabled = false;
+          extractSitemapMetaButton.textContent =
+            "Extract Headers & Meta to CSV";
+
+          if (response && response.success) {
+            showError(
+              `Successfully extracted metadata from ${response.totalExtracted} URLs. CSV file downloaded to your Downloads folder.`,
+              "success"
+            );
+          } else {
+            showError(
+              response ? response.error : "Failed to extract sitemap metadata"
+            );
+          }
+        }
+      );
+    } catch (error) {
+      extractSitemapMetaButton.disabled = false;
+      extractSitemapMetaButton.textContent = "Extract Headers & Meta to CSV";
+      showError("Error extracting sitemap metadata: " + error.message);
+    }
+  }
 
   // Common function for sitemap actions
   async function handleSitemapAction(extractContent) {
