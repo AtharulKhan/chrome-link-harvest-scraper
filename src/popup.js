@@ -50,12 +50,123 @@ document.addEventListener("DOMContentLoaded", () => {
   const urlFilterContains = document.getElementById("urlFilterContains");
   const urlFilterRegex = document.getElementById("urlFilterRegex");
   const urlContainsText = document.getElementById("urlContainsText");
+  const autoSendWebhookCheck = document.getElementById("autoSendWebhook");
+  const localFilesInput = document.getElementById("localFiles");
+  const fileCount = document.getElementById("fileCount");
+  const sendManualWebhookButton = document.getElementById("sendManualWebhook");
 
   // Load saved settings
   loadSettings();
 
   // Setup event handlers for multiple URLs
   setupUrlHandlers();
+
+  // Handle file upload input
+  localFilesInput.addEventListener("change", (e) => {
+    const files = e.target.files;
+    if (files.length > 0) {
+      fileCount.textContent = `${files.length} file(s) selected`;
+      // Enable manual webhook button only if auto-send is disabled
+      updateManualWebhookButton();
+    } else {
+      fileCount.textContent = "No files selected";
+      sendManualWebhookButton.disabled = true;
+    }
+  });
+
+  // Handle auto-send webhook checkbox
+  autoSendWebhookCheck.addEventListener("change", () => {
+    updateManualWebhookButton();
+    saveSettings();
+  });
+
+  // Function to update manual webhook button state
+  function updateManualWebhookButton() {
+    const hasFiles = localFilesInput.files && localFilesInput.files.length > 0;
+    const hasWebhookUrl = webhookUrlInput.value.trim() !== "";
+    const autoSendDisabled = !autoSendWebhookCheck.checked;
+
+    sendManualWebhookButton.disabled = !(
+      hasFiles &&
+      hasWebhookUrl &&
+      autoSendDisabled
+    );
+  }
+
+  // Handle manual webhook send button
+  sendManualWebhookButton.addEventListener("click", async () => {
+    const files = localFilesInput.files;
+    if (!files || files.length === 0) {
+      showError("Please select files to send");
+      return;
+    }
+
+    const webhookUrl = webhookUrlInput.value.trim();
+    if (!webhookUrl) {
+      showError("Please enter a webhook URL");
+      return;
+    }
+
+    sendManualWebhookButton.disabled = true;
+    sendManualWebhookButton.textContent = "Sending...";
+
+    try {
+      // Read all files and combine their content
+      const fileContents = [];
+
+      for (const file of files) {
+        const content = await readFileContent(file);
+        fileContents.push({
+          filename: file.name,
+          content: content,
+        });
+      }
+
+      // Combine all file contents
+      const combinedData = {
+        timestamp: new Date().toISOString(),
+        filesCount: files.length,
+        files: fileContents,
+        source: "manual_upload",
+      };
+
+      // Send to webhook
+      const response = await fetch(webhookUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(combinedData),
+      });
+
+      if (response.ok) {
+        showError("Successfully sent files to webhook", "success");
+        // Clear file input
+        localFilesInput.value = "";
+        fileCount.textContent = "No files selected";
+      } else {
+        throw new Error(
+          `Webhook returned ${response.status}: ${response.statusText}`
+        );
+      }
+    } catch (error) {
+      showError("Failed to send to webhook: " + error.message);
+    } finally {
+      sendManualWebhookButton.disabled = false;
+      sendManualWebhookButton.textContent = "Send to Webhook";
+      updateManualWebhookButton();
+    }
+  });
+
+  // Helper function to read file content
+  function readFileContent(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target.result);
+      reader.onerror = (e) => reject(new Error("Failed to read file"));
+      reader.readAsText(file);
+    });
+  }
 
   // Get current tab URL for the "Current Page" button
   useCurrentPageButton.addEventListener("click", () => {
@@ -516,6 +627,7 @@ document.addEventListener("DOMContentLoaded", () => {
               selector: selectorInput.value.trim(),
               delayMs: parseInt(rateDelayInput.value) || 0,
               webhookUrl: webhookUrlInput.value.trim(),
+              autoSendWebhook: autoSendWebhookCheck.checked,
               keywordDensity: keywordDensityCheck.checked,
               brokenLinkChecker: brokenLinkCheckerCheck.checked,
               csvExport: csvExportCheck.checked,
@@ -552,6 +664,7 @@ document.addEventListener("DOMContentLoaded", () => {
           selector: selectorInput.value.trim(),
           delayMs: parseInt(rateDelayInput.value) || 0,
           webhookUrl: webhookUrlInput.value.trim(),
+          autoSendWebhook: autoSendWebhookCheck.checked,
           keywordDensity: keywordDensityCheck.checked,
           brokenLinkChecker: brokenLinkCheckerCheck.checked,
           csvExport: csvExportCheck.checked,
@@ -598,6 +711,7 @@ document.addEventListener("DOMContentLoaded", () => {
         selector: selectorInput.value.trim(),
         delayMs: parseInt(rateDelayInput.value) || 0,
         webhookUrl: webhookUrlInput.value.trim(),
+        autoSendWebhook: autoSendWebhookCheck.checked,
         keywordDensity: keywordDensityCheck.checked,
         brokenLinkChecker: brokenLinkCheckerCheck.checked,
         csvExport: csvExportCheck.checked,
@@ -726,6 +840,7 @@ document.addEventListener("DOMContentLoaded", () => {
         selector: selectorInput.value,
         rateDelay: rateDelayInput.value,
         webhookUrl: webhookUrlInput.value,
+        autoSendWebhook: autoSendWebhookCheck.checked,
         keywordDensity: keywordDensityCheck.checked,
         brokenLinkChecker: brokenLinkCheckerCheck.checked,
         csvExport: csvExportCheck.checked,
@@ -839,6 +954,8 @@ document.addEventListener("DOMContentLoaded", () => {
           brokenLinkCheckerCheck.checked = settings.brokenLinkChecker;
         if (settings.csvExport !== undefined)
           csvExportCheck.checked = settings.csvExport;
+        if (settings.autoSendWebhook !== undefined)
+          autoSendWebhookCheck.checked = settings.autoSendWebhook;
       }
 
       // Add change listeners to all URL inputs

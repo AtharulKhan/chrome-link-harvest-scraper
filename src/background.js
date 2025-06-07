@@ -502,8 +502,8 @@ async function startCrawling(settings) {
       await saveIndividualFiles();
     }
 
-    // Send webhook notification if configured
-    if (settings.webhookUrl) {
+    // Send webhook notification if configured and auto-send is enabled
+    if (settings.webhookUrl && settings.autoSendWebhook) {
       await sendWebhookNotification(settings.webhookUrl);
     }
 

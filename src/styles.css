@@ -334,16 +334,75 @@ input[type="number"]:focus {
   margin-top: 6px;
 }
 
+/* Webhook Container */
+.webhook-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.webhook-options {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.checkbox-inline {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.checkbox-inline input[type="checkbox"] {
+  margin: 0;
+}
+
+/* File Upload Container */
+.file-upload-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.file-input {
+  display: none;
+}
+
+.file-input-label {
+  display: inline-block;
+  padding: 8px 16px;
+  background-color: #f0f0f0;
+  color: #333;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.3s ease;
+}
+
+.file-input-label:hover {
+  background-color: #e0e0e0;
+  border-color: #ccc;
+}
+
+.file-count {
+  font-size: 14px;
+  color: #666;
+  font-style: italic;
+}
+
 /* Footer */
 footer {
-  margin-top: 24px;
+  margin-top: 30px;
   text-align: center;
   font-size: 12px;
   color: #666;
 }
 
 footer a {
-  color: var(--primary-color);
+  color: #0057ff;
   text-decoration: none;
 }
 

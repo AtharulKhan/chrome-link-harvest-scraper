@@ -238,11 +238,48 @@ substance abuse treatment calgary"
 
           <div class="form-group">
             <label for="webhookUrl">Webhook URL (optional)</label>
-            <input
-              type="url"
-              id="webhookUrl"
-              placeholder="https://your-webhook.com/endpoint"
-            />
+            <div class="webhook-container">
+              <input
+                type="url"
+                id="webhookUrl"
+                placeholder="https://your-webhook.com/endpoint"
+              />
+              <div class="webhook-options">
+                <label class="checkbox-inline">
+                  <input type="checkbox" id="autoSendWebhook" checked />
+                  <span>Auto-send after crawl</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>File Upload & Manual Webhook</label>
+            <div class="file-upload-container">
+              <input
+                type="file"
+                id="localFiles"
+                multiple
+                accept=".txt,.json,.html,.csv"
+                class="file-input"
+              />
+              <label for="localFiles" class="file-input-label">
+                Choose Files...
+              </label>
+              <span id="fileCount" class="file-count">No files selected</span>
+              <button
+                type="button"
+                id="sendManualWebhook"
+                class="secondary-button"
+                disabled
+              >
+                Send to Webhook
+              </button>
+            </div>
+            <p class="helper-text">
+              Upload local files to combine and send to webhook (only available
+              when auto-send is disabled)
+            </p>
           </div>
 
           <div class="form-group checkboxes">
